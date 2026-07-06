@@ -1,0 +1,6 @@
+{
+  "name": "Okul Ders Programı Yönetim Sistemi",
+  "description": "Okul yöneticileri için geriye dönük arama (backtracking) algoritmalı, çakışma önleyici akıllı ve otomatik ders programı hazırlama uygulaması.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
