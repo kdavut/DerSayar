@@ -105,25 +105,6 @@ export default function TeacherAssignmentsTab() {
       animate={{ opacity: 1, y: 0 }}
       className="space-y-6 text-slate-800"
     >
-      {/* Dashboard Title Header */}
-      <div className="bg-[#0F172A] text-white p-6 rounded-2xl border border-slate-800 shadow-xl flex flex-col md:flex-row items-center justify-between gap-4">
-        <div className="flex items-center space-x-3.5">
-          <div className="p-3 bg-blue-600 rounded-xl text-white border border-blue-500 shadow-md">
-            <UserCheck className="w-6 h-6 animate-pulse" />
-          </div>
-          <div>
-            <h2 className="text-lg font-extrabold tracking-tight">Öğretmenlere Ders Atama Modülü</h2>
-            <p className="text-xs text-slate-300 mt-0.5">
-              Öğretmenlerin derslerini, branşlarını ve sınıflara olan atamalarını bu ekrandan hızlıca yönetin.
-            </p>
-          </div>
-        </div>
-        <div className="bg-slate-800/80 px-4 py-2 rounded-xl border border-slate-700/60 flex items-center space-x-2 shrink-0">
-          <span className="w-2.5 h-2.5 rounded-full bg-emerald-500"></span>
-          <span className="text-xs font-mono font-bold text-slate-200">Toplam Atama: {state.assignments.length} Ders</span>
-        </div>
-      </div>
-
       {/* Üst Özet Tablosu */}
       <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm space-y-4">
         <h3 className="text-xs font-extrabold tracking-wider uppercase text-slate-700 flex items-center gap-2 pb-2 border-b border-slate-100">
