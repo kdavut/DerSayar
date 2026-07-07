@@ -1408,24 +1408,6 @@ export default function App() {
         setSelectedTeacherId(id);
         showToast(`Öğretmen ${newTeacher.name} sisteme eklendi.`, "success");
       }
-
-      // Automatically sort teachers by branch popularity (count descending)
-      const branchCounts: Record<string, number> = {};
-      draft.teachers.forEach((t) => {
-        const br = t.branch.trim().toLowerCase();
-        branchCounts[br] = (branchCounts[br] || 0) + 1;
-      });
-
-      draft.teachers.sort((a, b) => {
-        const countA = branchCounts[a.branch.trim().toLowerCase()] || 0;
-        const countB = branchCounts[b.branch.trim().toLowerCase()] || 0;
-        if (countB !== countA) {
-          return countB - countA; // popular branches first
-        }
-        const branchCompare = a.branch.localeCompare(b.branch);
-        if (branchCompare !== 0) return branchCompare;
-        return a.name.localeCompare(b.name);
-      });
     });
 
     setNewTeacher({ name: "", branch: "", shortName: "", homeroomClass: "" });
