@@ -387,20 +387,23 @@ export const useAppStore = create<AppStore>((set) => ({
       const scheduleRef = doc(db, "schedules", user.uid);
       const docSnap = await getDoc(scheduleRef);
 
+      // Clean undefined values for Firestore compatibility by serializing and parsing
+      const cleanedState = JSON.parse(JSON.stringify(historyState.current));
+
       if (docSnap.exists()) {
         const existingData = docSnap.data();
         await setDoc(scheduleRef, {
           userId: user.uid,
-          title: historyState.current.settings.schoolName || "Ders Programı",
-          state: historyState.current,
+          title: cleanedState.settings?.schoolName || "Ders Programı",
+          state: cleanedState,
           createdAt: existingData.createdAt || serverTimestamp(),
           updatedAt: serverTimestamp()
         });
       } else {
         await setDoc(scheduleRef, {
           userId: user.uid,
-          title: historyState.current.settings.schoolName || "Ders Programı",
-          state: historyState.current,
+          title: cleanedState.settings?.schoolName || "Ders Programı",
+          state: cleanedState,
           createdAt: serverTimestamp(),
           updatedAt: serverTimestamp()
         });
