@@ -23,13 +23,16 @@ import {
   Award,
   Briefcase
 } from "lucide-react";
-import { detectConflicts } from "../utils/scheduler";
+import { detectConflicts, generateAutomaticScheduleAsync } from "../utils/scheduler";
 import {
   Home,
   Settings,
   Edit3,
   School,
-  User
+  User,
+  Link,
+  Flame,
+  Scissors
 } from "lucide-react";
 import { useAppStore } from "../store/useAppStore";
 import { ScheduleSlot, Teacher, GradeClass, Classroom, Course, LessonAssignment } from "../types";
@@ -1259,6 +1262,295 @@ const handleNavigateToTeacherFromCell = (dIdx: number, pIdx: number) => {
       showToast("Bu hücrede tanımlı bir öğretmen bulunamadı.", "info");
     }
   }
+
+  const countPlacedHoursOfAssignment = (sch: any, assignId: string, daysCount: number, periodsCount: number) => {
+    let count = 0;
+    for (const cId of Object.keys(sch)) {
+      const classS = sch[cId];
+      if (classS) {
+        for (let d = 0; d < daysCount; d++) {
+          const dayS = classS[d];
+          if (dayS) {
+            for (let p = 0; p < periodsCount; p++) {
+              if (dayS[p]?.assignmentId === assignId) {
+                count++;
+              }
+            }
+          }
+        }
+      }
+    }
+    return count;
+  };
+
+  const handleSplitAndPlaceLesson = async (dIdx: number, pIdx: number) => {
+    const { slot } = getSlotAt(dIdx, pIdx);
+    if (!slot) {
+      showToast("Bu hücrede bölünecek bir ders bulunamadı!", "error");
+      return;
+    }
+
+    const assignmentId = slot.assignmentId;
+    const assign = state.assignments.find((a) => a.id === assignmentId);
+    if (!assign) {
+      showToast("Ders ataması bulunamadı!", "error");
+      return;
+    }
+
+    const H = assign.weeklyHours;
+    if (H <= 1) {
+      showToast("Bu ders 1 saatlik olduğundan daha fazla bölünemez!", "info");
+      return;
+    }
+
+    const partiallySplit = ["2", ...Array(H - 2).fill("1")].join("+");
+    const fullySplit = Array(H).fill("1").join("+");
+
+    const clearedSchedule = JSON.parse(JSON.stringify(state.schedule));
+    const numDays = state.settings.days.length;
+    const numPeriods = state.settings.periodsPerDay;
+
+    for (const cId of Object.keys(clearedSchedule)) {
+      const classSched = clearedSchedule[cId];
+      if (classSched) {
+        for (let d = 0; d < numDays; d++) {
+          const daySched = classSched[d];
+          if (daySched) {
+            for (let p = 0; p < numPeriods; p++) {
+              if (daySched[p]?.assignmentId === assignmentId) {
+                daySched[p] = null;
+              }
+            }
+          }
+        }
+      }
+    }
+
+    showToast("Ders bölünerek yerleştirilmeye çalışılıyor, lütfen bekleyin...", "info");
+    setIsScheduling(true);
+    setSchedulingProgress({
+      phase: "backtracking",
+      percent: 10,
+      message: `Birinci aşama deneniyor (Kısmi Bölüm: ${partiallySplit})...`,
+      steps: 0
+    });
+
+    try {
+      const stateWithPartialSplit = {
+        ...state,
+        schedule: clearedSchedule,
+        assignments: state.assignments.map((a) =>
+          a.id === assignmentId ? { ...a, customPlacementMode: partiallySplit } : a
+        )
+      };
+
+      const result1 = await generateAutomaticScheduleAsync(stateWithPartialSplit, (prog) => {
+        setSchedulingProgress({
+          phase: prog.phase,
+          percent: Math.min(48, Math.round(prog.percent * 0.5)),
+          message: `Kısmi Bölüm Deneniyor (${partiallySplit}): ${prog.message}`,
+          steps: prog.steps
+        });
+      }, {
+        keepExisting: true,
+        deepSearch: true,
+        numTrials: 2
+      });
+
+      const placedCount1 = countPlacedHoursOfAssignment(result1.schedule, assignmentId, numDays, numPeriods);
+
+      if (result1.success && placedCount1 === H) {
+        updateState((draft) => {
+          draft.schedule = result1.schedule;
+          const targetAssign = draft.assignments.find((a) => a.id === assignmentId);
+          if (targetAssign) {
+            targetAssign.customPlacementMode = partiallySplit;
+          }
+        });
+        showToast(`Ders başarıyla ${partiallySplit} şeklinde bölünerek yerleştirildi!`, "success");
+        return;
+      }
+
+      setSchedulingProgress({
+        phase: "backtracking",
+        percent: 50,
+        message: `İkinci aşama deneniyor (Tam Bölüm: ${fullySplit})...`,
+        steps: 0
+      });
+
+      const stateWithFullSplit = {
+        ...state,
+        schedule: clearedSchedule,
+        assignments: state.assignments.map((a) =>
+          a.id === assignmentId ? { ...a, customPlacementMode: fullySplit } : a
+        )
+      };
+
+      const result2 = await generateAutomaticScheduleAsync(stateWithFullSplit, (prog) => {
+        setSchedulingProgress({
+          phase: prog.phase,
+          percent: 50 + Math.min(48, Math.round(prog.percent * 0.5)),
+          message: `Tam Bölüm Deneniyor (${fullySplit}): ${prog.message}`,
+          steps: prog.steps
+        });
+      }, {
+        keepExisting: true,
+        deepSearch: true,
+        numTrials: 3
+      });
+
+      const placedCount2 = countPlacedHoursOfAssignment(result2.schedule, assignmentId, numDays, numPeriods);
+
+      if (placedCount2 === H) {
+        updateState((draft) => {
+          draft.schedule = result2.schedule;
+          const targetAssign = draft.assignments.find((a) => a.id === assignmentId);
+          if (targetAssign) {
+            targetAssign.customPlacementMode = fullySplit;
+          }
+        });
+        showToast(`Ders başarıyla ${fullySplit} şeklinde bölünerek yerleştirildi!`, "success");
+      } else {
+        const currentPlaced = countPlacedHoursOfAssignment(state.schedule, assignmentId, numDays, numPeriods);
+        if (placedCount2 > currentPlaced) {
+          updateState((draft) => {
+            draft.schedule = result2.schedule;
+            const targetAssign = draft.assignments.find((a) => a.id === assignmentId);
+            if (targetAssign) {
+              targetAssign.customPlacementMode = fullySplit;
+            }
+          });
+          showToast(`Ders ${fullySplit} şeklinde bölündü ve kısmen yerleştirildi (${placedCount2}/${H} saat).`, "info");
+        } else {
+          showToast("Ders bölünmesine rağmen yerleştirilecek uygun boşluk bulunamadı!", "error");
+        }
+      }
+    } catch (error) {
+      console.error("Ders bölünürken hata:", error);
+      showToast("Ders bölünürken bir hata oluştu!", "error");
+    } finally {
+      setIsScheduling(false);
+      setSchedulingProgress(null);
+    }
+  };
+
+  const handleForceLessonAt = (dIdx: number, pIdx: number) => {
+    const { slot, classId } = getSlotAt(dIdx, pIdx);
+    if (!slot || !classId) {
+      showToast("Bu hücrede zorlanacak bir ders bulunamadı!", "error");
+      return;
+    }
+
+    const primaryAssign = state.assignments.find((a) => a.id === slot.assignmentId);
+    if (!primaryAssign) {
+      showToast("Ders ataması bulunamadı!", "error");
+      return;
+    }
+
+    const tIds = primaryAssign.teacherId ? primaryAssign.teacherId.split(",").map(id => id.trim()).filter(Boolean) : [];
+    const numDays = state.settings.days.length;
+    const numPeriods = state.settings.periodsPerDay;
+
+    const updatedSchedule = JSON.parse(JSON.stringify(state.schedule));
+    const messages: string[] = [];
+
+    for (const tId of tIds) {
+      const teacherName = teachersMap.get(tId)?.name || "Öğretmen";
+
+      for (const otherClassId of Object.keys(updatedSchedule)) {
+        if (otherClassId === classId) continue;
+
+        const otherSlot = updatedSchedule[otherClassId]?.[dIdx]?.[pIdx];
+        if (!otherSlot || !otherSlot.teacherId) continue;
+
+        const otherTIds = otherSlot.teacherId.split(",").map((id: string) => id.trim()).filter(Boolean);
+        if (otherTIds.includes(tId) && otherSlot.assignmentId !== slot.assignmentId) {
+          let relocated = false;
+
+          for (let nd = 0; nd < numDays; nd++) {
+            for (let np = 0; np < numPeriods; np++) {
+              if (updatedSchedule[otherClassId]?.[nd]?.[np] !== null) continue;
+
+              const classObj = classesMap.get(otherClassId);
+              if (classObj?.unavailability[nd]?.[np]) continue;
+
+              const teachersAvailable = otherTIds.every((id: string) => {
+                const tObj = teachersMap.get(id);
+                if (tObj?.unavailability[nd]?.[np]) return false;
+                for (const cId of Object.keys(updatedSchedule)) {
+                  if (updatedSchedule[cId]?.[nd]?.[np]?.teacherId?.split(",").map((x: string) => x.trim()).includes(id)) {
+                    return false;
+                  }
+                }
+                return true;
+              });
+
+              if (!teachersAvailable) continue;
+
+              if (otherSlot.classroomId) {
+                const rObj = classroomsMap.get(otherSlot.classroomId);
+                if (rObj?.unavailability[nd]?.[np]) continue;
+                let roomBusy = false;
+                for (const cId of Object.keys(updatedSchedule)) {
+                  if (updatedSchedule[cId]?.[nd]?.[np]?.classroomId === otherSlot.classroomId) {
+                    roomBusy = true;
+                    break;
+                  }
+                }
+                if (roomBusy) continue;
+              }
+
+              if (classObj?.dailyPeriods) {
+                const maxPeriodsThisDay = classObj.dailyPeriods[nd];
+                if (maxPeriodsThisDay !== undefined && np >= maxPeriodsThisDay) continue;
+              }
+
+              if (!updatedSchedule[otherClassId][nd]) {
+                updatedSchedule[otherClassId][nd] = Array(numPeriods).fill(null);
+              }
+              updatedSchedule[otherClassId][nd][np] = { ...otherSlot };
+              relocated = true;
+              messages.push(
+                `"${teacherName}" öğretmenin çakışan dersi "${classObj?.name || otherClassId}" sınıfında ${state.settings.days[nd]} ${np + 1}. saate taşındı.`
+              );
+              break;
+            }
+            if (relocated) break;
+          }
+
+          if (!relocated) {
+            updatedSchedule[otherClassId][dIdx][pIdx] = null;
+            const otherClassName = classesMap.get(otherClassId)?.name || otherClassId;
+            messages.push(
+              `"${teacherName}" öğretmenin çakışan dersi "${otherClassName}" sınıfından kaldırıldı.`
+            );
+          }
+        }
+      }
+    }
+
+    if (!updatedSchedule[classId]) {
+      updatedSchedule[classId] = Array(numDays).fill(null).map(() => Array(numPeriods).fill(null));
+    }
+    if (!updatedSchedule[classId][dIdx]) {
+      updatedSchedule[classId][dIdx] = Array(numPeriods).fill(null);
+    }
+    updatedSchedule[classId][dIdx][pIdx] = {
+      ...slot,
+      isLocked: true
+    };
+
+    updateState((draft) => {
+      draft.schedule = updatedSchedule;
+    });
+
+    const mainMsg = `"${primaryAssign.courseId ? (coursesMap.get(primaryAssign.courseId)?.name || "Ders") : "Ders"}" başarıyla bu saate zorlandı ve kilitlendi!`;
+    if (messages.length > 0) {
+      showToast(`${mainMsg} (${messages.join(" / ")})`, "success");
+    } else {
+      showToast(mainMsg, "success");
+    }
+  };
 
 const handleSetCustomClosureAt = (dIdx: number, pIdx: number, label: string) => {
     updateState((draft) => {
@@ -3463,6 +3755,41 @@ const handleSetCustomDistribution = (assignmentId: string, distribution: string)
                           return null;
                         })()}
 
+                        {(() => {
+                          const { slot } = getSlotAt(contextMenu.dIdx, contextMenu.pIdx);
+                          if (slot) {
+                            const assignment = state.assignments.find(a => a.id === slot.assignmentId);
+                            const showSplit = assignment && assignment.weeklyHours > 1;
+                            return (
+                              <div className="space-y-1 mt-1 border-t border-slate-100 pt-1">
+                                {showSplit && (
+                                  <button
+                                    onClick={() => {
+                                      handleSplitAndPlaceLesson(contextMenu.dIdx, contextMenu.pIdx);
+                                      setContextMenu(null);
+                                    }}
+                                    className="w-full text-left px-2.5 py-1.5 hover:bg-indigo-50 text-indigo-700 border border-indigo-100 bg-indigo-50/20 rounded-lg text-xs font-bold flex items-center gap-2 transition cursor-pointer"
+                                  >
+                                    <Scissors className="w-3.5 h-3.5 text-indigo-600" />
+                                    <span>Gerekirse Bu Dersi Böl</span>
+                                  </button>
+                                )}
+                                <button
+                                  onClick={() => {
+                                    handleForceLessonAt(contextMenu.dIdx, contextMenu.pIdx);
+                                    setContextMenu(null);
+                                  }}
+                                  className="w-full text-left px-2.5 py-1.5 hover:bg-amber-50 text-amber-700 border border-amber-100 bg-amber-50/20 rounded-lg text-xs font-bold flex items-center gap-2 transition cursor-pointer"
+                                >
+                                  <Flame className="w-3.5 h-3.5 text-amber-600 fill-amber-100" />
+                                  <span>Bu Dersi Zorla</span>
+                                </button>
+                              </div>
+                            );
+                          }
+                          return null;
+                        })()}
+
                         <button
                           onClick={() => {
                             handleNavigateToClassFromCell(contextMenu.dIdx, contextMenu.pIdx);
@@ -3471,7 +3798,7 @@ const handleSetCustomDistribution = (assignmentId: string, distribution: string)
                           className="w-full text-left px-2.5 py-1.5 hover:bg-slate-50 rounded-lg text-xs font-semibold text-slate-700 flex items-center gap-2 transition cursor-pointer"
                         >
                           <School className="w-3.5 h-3.5 text-slate-500" />
-                          <span>Sınıfa Bağlan (Sınıf Programına Git)</span>
+                          <span>Bu Sınıfı Bağla (Sınıf Programına Git)</span>
                         </button>
 
                         <button
