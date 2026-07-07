@@ -8,12 +8,13 @@ import { getFirestore, Firestore } from 'firebase/firestore';
  * or paste your Firebase configuration keys directly into this object.
  */
 const firebaseConfig = {
-  apiKey: (import.meta as any).env.VITE_FIREBASE_API_KEY || "PASTE_YOUR_API_KEY_HERE",
-  authDomain: (import.meta as any).env.VITE_FIREBASE_AUTH_DOMAIN || "PASTE_YOUR_AUTH_DOMAIN_HERE",
-  projectId: (import.meta as any).env.VITE_FIREBASE_PROJECT_ID || "PASTE_YOUR_PROJECT_ID_HERE",
-  storageBucket: (import.meta as any).env.VITE_FIREBASE_STORAGE_BUCKET || "PASTE_YOUR_STORAGE_BUCKET_HERE",
-  messagingSenderId: (import.meta as any).env.VITE_FIREBASE_MESSAGING_SENDER_ID || "PASTE_YOUR_MESSAGING_SENDER_ID_HERE",
-  appId: (import.meta as any).env.VITE_FIREBASE_APP_ID || "PASTE_YOUR_APP_ID_HERE"
+  apiKey: (import.meta as any).env.VITE_FIREBASE_API_KEY || "AIzaSyChTt0Wp-EqDNltxlJ2i5k7j-xaQ6lJowM",
+  authDomain: (import.meta as any).env.VITE_FIREBASE_AUTH_DOMAIN || "dersayar.firebaseapp.com",
+  projectId: (import.meta as any).env.VITE_FIREBASE_PROJECT_ID || "dersayar",
+  storageBucket: (import.meta as any).env.VITE_FIREBASE_STORAGE_BUCKET || "dersayar.firebasestorage.app",
+  messagingSenderId: (import.meta as any).env.VITE_FIREBASE_MESSAGING_SENDER_ID || "357435001791",
+  appId: (import.meta as any).env.VITE_FIREBASE_APP_ID || "1:357435001791:web:1fb65e9c7edad5966bef0a",
+  measurementId: (import.meta as any).env.VITE_FIREBASE_MEASUREMENT_ID || "G-KY81WENG90"
 };
 
 /**

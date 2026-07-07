@@ -112,6 +112,8 @@ interface UIState {
     isDangerous?: boolean;
     action: () => void;
   } | null;
+  user: any | null;
+  userLoading: boolean;
 }
 
 interface AppStoreActions {
@@ -119,7 +121,9 @@ interface AppStoreActions {
   updateState: (updater: (draft: AppState) => void) => void;
   undo: () => void;
   redo: () => void;
-  saveToCloud: () => void;
+  saveToCloud: () => void | Promise<void>;
+  setUser: (user: any | null) => void;
+  loadFromCloud: () => Promise<void>;
   setToast: (toast: { message: string; type: "success" | "error" | "info" } | null) => void;
   showToast: (message: string, type: "success" | "error" | "info") => void;
   setConfirmModal: (modal: UIState["confirmModal"]) => void;
@@ -235,6 +239,8 @@ const initialUIState: UIState = {
   searchQuery: "",
   toast: null,
   confirmModal: null,
+  user: null,
+  userLoading: true,
 };
 
 const getInitialHistoryState = (): FullHistoryState => {
@@ -270,6 +276,11 @@ export const useAppStore = create<AppStore>((set) => ({
   setHistoryState: (historyState) => set({ historyState }),
 
   updateState: (updater) => set((store) => {
+    if (!store.user) {
+      return {
+        toast: { message: "Değişiklik yapabilmek için lütfen geçerli bir lisansa sahip yönetici hesabı ile giriş yapın (SaaS Lisans Koruması).", type: "error" }
+      };
+    }
     const { historyState } = store;
     const { current: state } = historyState;
     const clonedState = JSON.parse(JSON.stringify(state)) as AppState;
@@ -291,6 +302,11 @@ export const useAppStore = create<AppStore>((set) => ({
   }),
 
   undo: () => set((store) => {
+    if (!store.user) {
+      return {
+        toast: { message: "Geri alma işlemi sadece yönetici modunda geçerlidir.", type: "error" }
+      };
+    }
     const { historyState } = store;
     if (historyState.past.length === 0) return {};
     
@@ -317,6 +333,11 @@ export const useAppStore = create<AppStore>((set) => ({
   }),
 
   redo: () => set((store) => {
+    if (!store.user) {
+      return {
+        toast: { message: "Yineleme işlemi sadece yönetici modunda geçerlidir.", type: "error" }
+      };
+    }
     const { historyState } = store;
     if (historyState.future.length === 0) return {};
 
@@ -342,23 +363,131 @@ export const useAppStore = create<AppStore>((set) => ({
     };
   }),
 
-  saveToCloud: () => set((store) => {
-    const { historyState } = store;
-    const updatedHistory = {
-      ...historyState,
-      isSynced: true
-    };
+  saveToCloud: async () => {
+    const store = useAppStore.getState();
+    const { historyState, user } = store;
+    
+    if (!user) {
+      set({
+        toast: { message: "Verileri buluta kaydetmek için lütfen giriş yapın.", type: "error" }
+      });
+      return;
+    }
 
-    localStorage.setItem(
-      LOCAL_STORAGE_KEY,
-      JSON.stringify({ current: historyState.current, isSynced: true })
-    );
+    try {
+      const { db } = await import("../firebase");
+      if (!db) {
+        set({
+          toast: { message: "Bulut veritabanı bağlantısı kurulamadı.", type: "error" }
+        });
+        return;
+      }
 
-    return {
-      historyState: updatedHistory,
-      toast: { message: "Harika! Tüm ders programı verileri Firebase bulut sunucusuna başarıyla kaydedildi.", type: "success" }
-    };
-  }),
+      const { doc, getDoc, setDoc, serverTimestamp } = await import("firebase/firestore");
+      const scheduleRef = doc(db, "schedules", user.uid);
+      const docSnap = await getDoc(scheduleRef);
+
+      if (docSnap.exists()) {
+        const existingData = docSnap.data();
+        await setDoc(scheduleRef, {
+          userId: user.uid,
+          title: historyState.current.settings.schoolName || "Ders Programı",
+          state: historyState.current,
+          createdAt: existingData.createdAt || serverTimestamp(),
+          updatedAt: serverTimestamp()
+        });
+      } else {
+        await setDoc(scheduleRef, {
+          userId: user.uid,
+          title: historyState.current.settings.schoolName || "Ders Programı",
+          state: historyState.current,
+          createdAt: serverTimestamp(),
+          updatedAt: serverTimestamp()
+        });
+      }
+
+      const updatedHistory = {
+        ...historyState,
+        isSynced: true
+      };
+
+      localStorage.setItem(
+        LOCAL_STORAGE_KEY,
+        JSON.stringify({ current: historyState.current, isSynced: true })
+      );
+
+      set({
+        historyState: updatedHistory,
+        toast: { message: "Harika! Tüm ders programı verileri bulut sunucusuna başarıyla kaydedildi.", type: "success" }
+      });
+    } catch (error: any) {
+      console.error("Buluta kaydetme hatası:", error);
+      let errorMessage = "Buluta kaydetme sırasında bir hata oluştu. Lütfen bağlantınızı kontrol edin.";
+      if (error && error.code) {
+        if (error.code === "permission-denied") {
+          errorMessage = "Yetki Hatası (Erişim Engellendi). Lütfen oturum yetkinizi kontrol edin veya tekrar giriş yapın.";
+        } else if (error.code === "unavailable") {
+          errorMessage = "Bulut Servislerine Ulaşılamıyor. Lütfen internet bağlantınızı kontrol edin veya veri tabanının etkinleştirildiğinden emin olun.";
+        } else if (error.code === "not-found") {
+          errorMessage = "Bulut Veritabanı Bulunamadı. Veri tabanının oluşturulduğundan emin olun.";
+        } else {
+          errorMessage = `Buluta kaydetme hatası [${error.code}]: ${error.message || error}`;
+        }
+      } else if (error && error.message) {
+        errorMessage = `Buluta kaydetme hatası: ${error.message}`;
+      }
+      set({
+        toast: { message: errorMessage, type: "error" }
+      });
+    }
+  },
+
+  setUser: (user) => set({ user, userLoading: false }),
+
+  loadFromCloud: async () => {
+    const store = useAppStore.getState();
+    const { user } = store;
+    if (!user) return;
+
+    try {
+      const { db } = await import("../firebase");
+      if (!db) return;
+
+      const { doc, getDoc } = await import("firebase/firestore");
+      const scheduleRef = doc(db, "schedules", user.uid);
+      const docSnap = await getDoc(scheduleRef);
+
+      if (docSnap.exists()) {
+        const data = docSnap.data();
+        if (data && data.state) {
+          const loadedHistory = {
+            current: data.state,
+            past: [],
+            future: [],
+            isSynced: true
+          };
+
+          localStorage.setItem(
+            LOCAL_STORAGE_KEY,
+            JSON.stringify({ current: data.state, isSynced: true })
+          );
+
+          set({
+            historyState: loadedHistory,
+            toast: { message: "Ders programınız buluttan başarıyla yüklendi.", type: "success" }
+          });
+        }
+      } else {
+        console.log("No cloud data found. Saving local state to cloud.");
+        await store.saveToCloud();
+      }
+    } catch (error) {
+      console.error("Buluttan yükleme hatası:", error);
+      set({
+        toast: { message: "Veriler buluttan yüklenirken bir hata oluştu.", type: "error" }
+      });
+    }
+  },
 
   setToast: (toast) => set({ toast }),
   
@@ -367,6 +496,11 @@ export const useAppStore = create<AppStore>((set) => ({
   setConfirmModal: (confirmModal) => set({ confirmModal }),
 
   handleClearAllData: () => set((store) => {
+    if (!store.user) {
+      return {
+        toast: { message: "Tüm verileri temizleme işlemi sadece yönetici modunda geçerlidir.", type: "error" }
+      };
+    }
     const setConfirmModal = (modal: any) => set({ confirmModal: modal });
     const setHistoryState = store.setHistoryState;
     const showToast = store.showToast;
@@ -547,6 +681,7 @@ export const useAppStore = create<AppStore>((set) => ({
 
     const showToast = store.showToast;
     const setHistoryState = store.setHistoryState;
+    const hasUser = !!store.user;
 
     const reader = new FileReader();
     reader.onload = (e) => {
@@ -555,12 +690,16 @@ export const useAppStore = create<AppStore>((set) => ({
         if (json && typeof json === "object" && "settings" in json && "teachers" in json && "classes" in json) {
           setHistoryState({
             current: json,
-            past: [store.historyState.current, ...store.historyState.past].slice(0, 30),
+            past: hasUser ? [store.historyState.current, ...store.historyState.past].slice(0, 30) : [],
             future: [],
-            isSynced: false
+            isSynced: !hasUser // If no user, it is considered synced (or rather, irrelevant to cloud sync)
           });
-          localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify({ current: json, isSynced: false }));
-          showToast("Yedek veriler başarıyla yüklendi ve geri alındı.", "success");
+          if (hasUser) {
+            localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify({ current: json, isSynced: false }));
+            showToast("Yedek veriler başarıyla yüklendi ve geri alındı.", "success");
+          } else {
+            showToast("Yedek başarıyla yüklendi (Salt Okunur Mod). Düzenleme yapılamaz, sadece inceleyebilirsiniz.", "info");
+          }
         } else {
           showToast("Geçersiz yedek dosyası formatı. Dosya geçerli bir yedek JSON olmalıdır.", "error");
         }

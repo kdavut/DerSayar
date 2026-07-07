@@ -651,7 +651,8 @@ const handleCellDoubleClick = (dIdx: number, pIdx: number) => {
           }
         }
 
-        // Check if classroom is occupied elsewhere
+        // Check if classroom is occupied elsewhere (Allowed to overlap per user request: "Atölyeler paylaşılabilir")
+        /*
         if (currentActiveAssignment.classroomId) {
           for (const otherClassId of Object.keys(state.schedule)) {
             if (otherClassId === currentActiveAssignment.classId) continue;
@@ -664,6 +665,7 @@ const handleCellDoubleClick = (dIdx: number, pIdx: number) => {
             }
           }
         }
+        */
       }
 
       if (scheduleViewMode === "class" && viewingEntityId) {
@@ -888,7 +890,8 @@ const handleDrop = (e: React.DragEvent, toDay: number, toPeriod: number, toClass
           }
         }
 
-        // Check if classroom is occupied elsewhere
+        // Check if classroom is occupied elsewhere (Allowed to overlap per user request: "Atölyeler paylaşılabilir")
+        /*
         if (assign.classroomId) {
           for (const otherClassId of Object.keys(state.schedule)) {
             if (otherClassId === targetClassId) continue;
@@ -901,6 +904,7 @@ const handleDrop = (e: React.DragEvent, toDay: number, toPeriod: number, toClass
             }
           }
         }
+        */
 
         // Check if there's already a slot in the target cell and if it's locked
         const existingSlot = state.schedule[targetClassId]?.[toDay]?.[toPeriod];
@@ -1063,7 +1067,8 @@ const handleApplyManualCellAssignment = (assignmentId: string | "clear") => {
       }
     }
 
-    // b) Classroom busy elsewhere (ATÖLYE ÇAKIŞMASI - İMKANSIZ KIL)
+    // b) Classroom busy elsewhere (ATÖLYE ÇAKIŞMASI - İMKANSIZ KIL) (Allowed to overlap per user request: "Atölyeler paylaşılabilir")
+    /*
     if (assign.classroomId) {
       for (const otherClassId of Object.keys(state.schedule)) {
         if (otherClassId === classId) continue;
@@ -1076,6 +1081,7 @@ const handleApplyManualCellAssignment = (assignmentId: string | "clear") => {
         }
       }
     }
+    */
 
     // 4. Weekly hours limit check
     const placed = getAssignmentPlacedHours(assign.id);
@@ -1721,6 +1727,7 @@ const handleSetCustomDistribution = (assignmentId: string, distribution: string)
                                 let cellIsUnavailabilityLocked = false;
                                 let cellIsImpossiblePeriod = false;
                                 let closureName = "";
+                                let classroomSlots: Array<{ slot: ScheduleSlot; classId: string }> = [];
 
                                 if (scheduleViewMode === "class" && viewingEntityId) {
                                   activeClassId = viewingEntityId;
@@ -1756,10 +1763,12 @@ const handleSetCustomDistribution = (assignmentId: string, distribution: string)
                                     const classS = state.schedule[cId];
                                     const sl = classS?.[dIdx]?.[pIdx];
                                     if (sl && sl.classroomId === viewingEntityId) {
-                                      slot = sl;
-                                      activeClassId = cId;
-                                      break;
+                                      classroomSlots.push({ slot: sl, classId: cId });
                                     }
+                                  }
+                                  if (classroomSlots.length > 0) {
+                                    slot = classroomSlots[0].slot;
+                                    activeClassId = classroomSlots[0].classId;
                                   }
                                 }
 
@@ -2009,6 +2018,31 @@ const handleSetCustomDistribution = (assignmentId: string, distribution: string)
                                                   );
                                                 })()}
                                               </>
+                                            ) : scheduleViewMode === "classroom" ? (
+                                              <div className="flex flex-col gap-0.5 w-full max-h-full overflow-y-auto p-0.5 leading-none">
+                                                {classroomSlots.map((item, idx) => {
+                                                  const sl = item.slot;
+                                                  const clsObj = classesMap.get(item.classId);
+                                                  const assignedTeachers = sl.teacherId ? sl.teacherId.split(",").map(id => teachersMap.get(id)).filter(Boolean) : [];
+                                                  return (
+                                                    <div key={idx} className="flex flex-col items-center bg-white/60 px-1 py-0.5 rounded border border-slate-200 text-slate-800 w-full mb-0.5 last:mb-0 shadow-[0_1px_2px_rgba(0,0,0,0.03)] leading-none">
+                                                      {clsObj && (
+                                                        <span className="text-[7.5px] font-black text-blue-900 bg-blue-100 px-1 py-0.1 rounded uppercase tracking-wide leading-none">
+                                                          {clsObj.name}
+                                                        </span>
+                                                      )}
+                                                      <span className="text-[8px] font-bold text-slate-900 truncate max-w-full mt-0.5 leading-none">
+                                                        {coursesMap.get(sl.courseId)?.name || "DERS"}
+                                                      </span>
+                                                      {assignedTeachers.length > 0 && (
+                                                        <span className="text-[7px] text-slate-500 font-medium truncate max-w-full leading-none mt-0.5">
+                                                          {assignedTeachers.map(t => t.name.split(" ")[0]).join(", ")}
+                                                        </span>
+                                                      )}
+                                                    </div>
+                                                  );
+                                                })}
+                                              </div>
                                             ) : (
                                               <>
                                                 {(() => {

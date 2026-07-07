@@ -183,6 +183,7 @@ export default function TeachersTab() {
               value={newTeacher.shortName || ""}
               onChange={(e) => setNewTeacher({ ...newTeacher, shortName: e.target.value })}
               placeholder="Örn: SÜL-YIL"
+              maxLength={8}
               className="w-full bg-white border border-slate-200 rounded-lg px-3 py-2 text-xs text-slate-800 focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500"
             />
           </div>

@@ -79,6 +79,9 @@ import {
   optimizeGapsForAllTeachers as runOptimizeGapsForAllTeachers,
   removeSingleLessonDays as runRemoveSingleLessonDays
 } from "./utils/gapOptimizer";
+import { onAuthStateChanged } from "firebase/auth";
+import { auth } from "./firebase";
+import Login from "./components/Login";
 
 const LOCAL_STORAGE_KEY = "okul_ders_programi_state";
 
@@ -196,11 +199,83 @@ export default function App() {
     handleAutoGenerateClick,
     handleScheduleSelectedTeacher,
     handleScheduleAllTeachers,
+    user,
+    userLoading,
+    setUser,
+    loadFromCloud,
   } = useAppStore();
 
   const { current: state, isSynced } = historyState;
+  const [isGuestMode, setIsGuestMode] = useState(false);
+
+  useEffect(() => {
+    if (!auth) {
+      setUser(null);
+      return;
+    }
+
+    const unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
+      const isNewSession = !sessionStorage.getItem("dersayar_active_session");
+      if (firebaseUser && isNewSession) {
+        try {
+          const { signOut } = await import("firebase/auth");
+          await signOut(auth);
+          setUser(null);
+          setIsGuestMode(false);
+        } catch (error) {
+          console.error("Session logout error:", error);
+        } finally {
+          sessionStorage.setItem("dersayar_active_session", "true");
+        }
+      } else {
+        sessionStorage.setItem("dersayar_active_session", "true");
+        setUser(firebaseUser);
+        if (firebaseUser) {
+          setIsGuestMode(false);
+        }
+      }
+    });
+
+    return () => unsubscribe();
+  }, [setUser]);
+
+  useEffect(() => {
+    if (user) {
+      loadFromCloud();
+    }
+  }, [user, loadFromCloud]);
 
   // Local schedule states moved to ScheduleTab.tsx
+  const [showUnsavedLogoutModal, setShowUnsavedLogoutModal] = useState(false);
+  const [isSavingAndExiting, setIsSavingAndExiting] = useState(false);
+
+  const handleSaveAndExit = async () => {
+    try {
+      setIsSavingAndExiting(true);
+      await saveToCloud();
+      setShowUnsavedLogoutModal(false);
+      const { signOut } = await import("firebase/auth");
+      await signOut(auth!);
+      showToast("Verileriniz buluta başarıyla kaydedildi ve güvenli çıkış yapıldı.", "success");
+    } catch (error) {
+      console.error("Save & Exit error:", error);
+      showToast("Veriler kaydedilirken hata oluştu. Çıkış iptal edildi.", "error");
+    } finally {
+      setIsSavingAndExiting(false);
+    }
+  };
+
+  const handleExitWithoutSaving = async () => {
+    try {
+      setShowUnsavedLogoutModal(false);
+      const { signOut } = await import("firebase/auth");
+      await signOut(auth!);
+      showToast("Değişiklikler kaydedilmeden güvenli çıkış yapıldı.", "info");
+    } catch (error) {
+      console.error("Exit without saving error:", error);
+      showToast("Çıkış yapılırken bir hata oluştu.", "error");
+    }
+  };
 
   // Realtime status selection states
   const [realtimeDaySel, setRealtimeDaySel] = useState<"now" | number>("now");
@@ -1976,6 +2051,34 @@ export default function App() {
 
   // Extracted and moved to ScheduleTab.tsx: const getClassroomPlacedHours =;
 
+  if (userLoading) {
+    return (
+      <div className="min-h-screen bg-[#070F22] flex flex-col justify-center items-center select-none">
+        <div className="relative w-16 h-16 mb-4 flex items-center justify-center">
+          <div className="absolute inset-0 border-2 border-slate-800 rounded-full"></div>
+          <div className="absolute inset-0 border-2 border-t-cyan-400 rounded-full animate-spin"></div>
+        </div>
+        <p className="text-sm font-semibold tracking-widest text-slate-400 uppercase animate-pulse">
+          DerSayar Yükleniyor...
+        </p>
+      </div>
+    );
+  }
+
+  if (!user && !isGuestMode) {
+    return (
+      <Login
+        onLoginSuccess={(usr) => {
+          setUser(usr);
+          setIsGuestMode(false);
+        }}
+        onContinueAsGuest={() => {
+          setIsGuestMode(true);
+        }}
+      />
+    );
+  }
+
   return (
     <div id="school-scheduler" className="flex flex-col h-screen w-full bg-[#F1F5F9] text-slate-800 font-sans antialiased overflow-hidden">
       
@@ -2075,19 +2178,78 @@ export default function App() {
             )}
           </div>
 
+          {/* User Profile info */}
+          {user && (
+            <div className="flex items-center gap-2 border-r border-slate-800 pr-4 mr-1">
+              <div className="w-8 h-8 rounded-full bg-gradient-to-r from-cyan-500 to-blue-500 flex items-center justify-center text-xs font-bold text-white shadow-md">
+                {user.email?.substring(0, 2).toUpperCase() || "DS"}
+              </div>
+              <div className="hidden md:flex flex-col text-left">
+                <span className="text-[11px] font-bold text-white leading-tight">Yönetici</span>
+                <span className="text-[10px] text-slate-400 font-mono leading-none">{user.email}</span>
+              </div>
+            </div>
+          )}
+
           {/* Güvenli Çıkış */}
           <button
-            onClick={() => {
-              showToast("Güvenli çıkış yapılıyor... (Fonksiyon ataması daha sonra yapılacak)", "info");
+            onClick={async () => {
+              if (isGuestMode) {
+                setIsGuestMode(false);
+                setUser(null);
+                showToast("Misafir modundan çıkış yapıldı.", "info");
+                return;
+              }
+
+              if (!isSynced) {
+                setShowUnsavedLogoutModal(true);
+              } else {
+                try {
+                  setIsSavingAndExiting(true);
+                  await saveToCloud();
+                  const { signOut } = await import("firebase/auth");
+                  await signOut(auth!);
+                  showToast("Güvenli çıkış yapıldı.", "success");
+                } catch (error) {
+                  console.error("Signout error:", error);
+                  showToast("Çıkış yapılırken bir hata oluştu.", "error");
+                } finally {
+                  setIsSavingAndExiting(false);
+                }
+              }
             }}
-            className="flex items-center space-x-2 text-slate-300 hover:text-white hover:bg-slate-800/60 border border-slate-700 px-3.5 py-2 rounded-xl text-xs font-bold transition shadow-sm cursor-pointer"
+            className="flex items-center space-x-2 text-rose-300 hover:text-white hover:bg-rose-950/40 hover:border-rose-800 border border-slate-700 px-3.5 py-2 rounded-xl text-xs font-bold transition shadow-sm cursor-pointer"
             title="Sistemden Güvenli Çıkış"
           >
-            <LogOut className="w-3.5 h-3.5 shrink-0" />
-            <span>Güvenli Çıkış</span>
+            {isSavingAndExiting ? (
+              <div className="w-3.5 h-3.5 border-2 border-rose-400 border-t-transparent rounded-full animate-spin shrink-0"></div>
+            ) : (
+              <LogOut className="w-3.5 h-3.5 shrink-0 text-rose-400" />
+            )}
+            <span>{isSavingAndExiting ? "Çıkış Yapılıyor..." : "Güvenli Çıkış"}</span>
           </button>
         </div>
       </header>
+
+      {isGuestMode && (
+        <div className="bg-gradient-to-r from-amber-500 via-orange-500 to-amber-600 px-6 py-2.5 flex items-center justify-between text-white shadow-md shrink-0 z-20 text-xs font-semibold select-none">
+          <div className="flex items-center space-x-2">
+            <span className="text-sm">⚠️</span>
+            <span>
+              <strong>Görüntüleme Modu (Salt Okunur):</strong> Programı yerel hafızadan görüntülüyorsunuz. Programda düzenleme yapmak, kaydetmek ve tüm özellikleri kullanabilmek için lütfen Yönetici Girişi yapın.
+            </span>
+          </div>
+          <button
+            onClick={() => {
+              setIsGuestMode(false);
+              setUser(null);
+            }}
+            className="bg-white hover:bg-slate-100 text-orange-600 px-3.5 py-1.5 rounded-xl text-[10px] font-extrabold transition-all duration-150 cursor-pointer shadow-sm hover:scale-[1.02]"
+          >
+            YÖNETİCİ GİRİŞİ YAP
+          </button>
+        </div>
+      )}
 
       {/* -------------------------------------------------------------
           MAIN COMPONENT BODY (SIDEBAR + ACTIVE VIEWPORT)
@@ -2428,6 +2590,7 @@ export default function App() {
                 handleClearTeacherLessons={handleClearTeacherLessons}
               />
             )}
+          </div> {/* Close #active-tab-container */}
 
           {/* -------------------------------------------------------------
               PRINT ENGINE CONTAINER (ONLY VISIBLE IN BROWSER PRINT DIALOG)
@@ -2460,7 +2623,7 @@ export default function App() {
                   const grid = getTeacherWeeklySchedule(tId);
 
                   return (
-                    <div key={tId} className="print-page flex flex-col justify-between" style={{ minHeight: "260mm" }}>
+                    <div key={tId} className="print-page flex flex-col justify-between" style={{ minHeight: "240mm" }}>
                       <div>
                         {/* Official header */}
                         <div className="official-header uppercase">
@@ -2608,11 +2771,25 @@ export default function App() {
                         })()}
                       </div>
 
-                      {/* Signature block */}
-                      <div className="official-signature flex flex-col items-center">
-                        <div className="text-sm font-semibold">{state.settings.principalName || "Okul Müdürü"}</div>
-                        <div className="text-xs text-slate-500 mt-1">Okul Müdürü</div>
-                        <div className="text-[10px] font-mono text-slate-400 mt-8">İmza</div>
+                      {/* Signature block with Tebliğ Eden & Tebellüğ Eden */}
+                      <div className="mt-4 pt-3 border-t border-slate-300 w-full">
+                        <div className="grid grid-cols-2 gap-4 text-center">
+                          {/* Tebellüğ Eden (Left) */}
+                          <div className="flex flex-col items-center">
+                            <span className="text-[10px] font-extrabold text-slate-800 tracking-wider">TEBELLÜĞ EDEN</span>
+                            <span className="text-[10px] font-bold text-slate-700 mt-1.5">{teacher.name}</span>
+                            <span className="text-[9px] text-slate-500 font-semibold">{teacher.branch || "Öğretmen"}</span>
+                            <span className="text-[8px] font-mono text-slate-400 mt-5 border-b border-dashed border-slate-300 w-28 pb-0.5">Tarih / İmza</span>
+                          </div>
+
+                          {/* Tebliğ Eden (Right) */}
+                          <div className="flex flex-col items-center">
+                            <span className="text-[10px] font-extrabold text-slate-800 tracking-wider">TEBLİĞ EDEN</span>
+                            <span className="text-[10px] font-bold text-slate-700 mt-1.5">{state.settings.principalName || "Okul Müdürü"}</span>
+                            <span className="text-[9px] text-slate-500 font-semibold">Okul Müdürü</span>
+                            <span className="text-[8px] font-mono text-slate-400 mt-5 border-b border-dashed border-slate-300 w-28 pb-0.5">İmza</span>
+                          </div>
+                        </div>
                       </div>
                     </div>
                   );
@@ -2620,7 +2797,7 @@ export default function App() {
               }
 
               // Render individual Portrait A4 page for class(es)
-              if (type.startsWith("class") && !type.includes("carsaf")) {
+              if (type.startsWith("class") && !type.startsWith("classroom") && !type.includes("carsaf")) {
                 return ids.map((cId) => {
                   const classObj = state.classes.find(c => c.id === cId);
                   if (!classObj) return null;
@@ -2632,7 +2809,7 @@ export default function App() {
                   const classAssignments = state.assignments.filter(a => a.classId === cId);
 
                   return (
-                    <div key={cId} className="print-page flex flex-col justify-between" style={{ minHeight: "260mm" }}>
+                    <div key={cId} className="print-page flex flex-col justify-between" style={{ minHeight: "240mm" }}>
                       <div>
                         {/* Official header */}
                         <div className="official-header uppercase">
@@ -2735,7 +2912,7 @@ export default function App() {
                               {classAssignments.map((a, index) => {
                                 const course = coursesMap.get(a.courseId);
                                 const assignedTeachers = a.teacherId ? a.teacherId.split(",").map(id => teachersMap.get(id)).filter(Boolean) : [];
-                                const teacherNames = assignedTeachers.map(t => getAbbreviatedTeacherName(t.name)).join(", ");
+                                const teacherNames = assignedTeachers.map(t => t ? t.name : "").join(", ");
                                 return (
                                   <tr key={a.id}>
                                     <td style={{ fontSize: "8px", padding: "2px" }}>{index + 1}</td>
@@ -2778,7 +2955,7 @@ export default function App() {
                   const grid = getClassroomWeeklySchedule(crId);
 
                   return (
-                    <div key={crId} className="print-page flex flex-col justify-between" style={{ minHeight: "260mm" }}>
+                    <div key={crId} className="print-page flex flex-col justify-between" style={{ minHeight: "240mm" }}>
                       <div>
                         {/* Official header */}
                         <div className="official-header uppercase">
@@ -3132,7 +3309,6 @@ export default function App() {
             })()}
           </div>
 
-          </div>
         </main>
       </div>
       {/* Modern Confirmation Modal with Blurred Background */}
@@ -3166,6 +3342,60 @@ export default function App() {
                   className={`px-4 py-2 rounded-xl text-xs font-bold text-white transition cursor-pointer shadow-lg ${confirmModal.isDangerous ? 'bg-rose-600 hover:bg-rose-700 shadow-rose-200' : 'bg-blue-600 hover:bg-blue-700 shadow-blue-200'}`}
                 >
                   {confirmModal.confirmText || 'Evet, Devam Et'}
+                </button>
+              </div>
+            </motion.div>
+          </div>
+        )}
+
+        {showUnsavedLogoutModal && (
+          <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center z-[110] p-4 select-none">
+            <motion.div
+              initial={{ opacity: 0, scale: 0.95, y: 10 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.95, y: 10 }}
+              className="bg-white rounded-3xl shadow-2xl max-w-lg w-full overflow-hidden border border-slate-100 text-left"
+            >
+              <div className="p-8 space-y-5">
+                <div className="w-14 h-14 rounded-full bg-amber-50 text-amber-600 flex items-center justify-center">
+                  <AlertTriangle className="w-7 h-7" />
+                </div>
+                <div>
+                  <h3 className="text-xl font-extrabold text-slate-800 tracking-tight">Buluta Kaydedilmemiş Veri Var!</h3>
+                  <p className="text-sm text-slate-500 mt-2 leading-relaxed font-semibold">
+                    DerSayar üzerinde yaptığınız bazı değişiklikler henüz buluta kaydedilmemiş. Güvenli çıkış yapmadan önce bu verileri bulut veritabanınıza yedeklemek ister misiniz?
+                  </p>
+                </div>
+              </div>
+              
+              <div className="bg-slate-50 px-8 py-5 flex flex-col sm:flex-row items-stretch sm:items-center justify-end gap-3 border-t border-slate-100">
+                <button
+                  disabled={isSavingAndExiting}
+                  onClick={() => setShowUnsavedLogoutModal(false)}
+                  className="px-5 py-3 rounded-2xl text-xs font-bold text-slate-600 hover:bg-slate-100 hover:text-slate-800 border border-slate-200 bg-white transition cursor-pointer disabled:opacity-50"
+                >
+                  Geri Dön (Vazgeç)
+                </button>
+                <button
+                  disabled={isSavingAndExiting}
+                  onClick={handleExitWithoutSaving}
+                  className="px-5 py-3 rounded-2xl text-xs font-bold text-rose-600 hover:bg-rose-100 border border-rose-200 bg-white transition cursor-pointer disabled:opacity-50"
+                >
+                  Yedeklemeden Çık
+                </button>
+                <button
+                  disabled={isSavingAndExiting}
+                  onClick={handleSaveAndExit}
+                  className="px-5 py-3 rounded-2xl text-xs font-bold text-white bg-gradient-to-r from-emerald-500 to-teal-600 hover:from-emerald-400 hover:to-teal-500 transition cursor-pointer shadow-lg shadow-emerald-200 flex items-center justify-center gap-2 disabled:opacity-50"
+                >
+                  {isSavingAndExiting ? (
+                    <>
+                      <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin"></div>
+                      <span>Kaydediliyor...</span>
+                    </>
+                  ) : (
+                    <span>Buluta Kaydet ve Çık</span>
+                  )}
                 </button>
               </div>
             </motion.div>

@@ -156,7 +156,7 @@
     box-sizing: border-box !important;
     width: 100% !important;
     max-width: 100% !important;
-    padding: 10mm 15mm !important;
+    padding: 6mm 10mm !important;
     background: white !important;
     color: black !important;
     overflow: hidden !important;
@@ -171,7 +171,7 @@
   .print-table {
     width: 100% !important;
     border-collapse: collapse !important;
-    margin-top: 15px !important;
+    margin-top: 10px !important;
   }
 
   .print-table th {
@@ -179,15 +179,15 @@
     color: #000 !important;
     border: 1.5px solid #000 !important;
     font-weight: bold !important;
-    font-size: 10px !important;
-    padding: 4px 2px !important;
+    font-size: 8.5px !important;
+    padding: 3px 2px !important;
     text-align: center !important;
   }
 
   .print-table td {
     border: 1.5px solid #000 !important;
-    font-size: 9px !important;
-    padding: 4px 3px !important;
+    font-size: 8px !important;
+    padding: 3px 2px !important;
     text-align: center !important;
     vertical-align: middle !important;
     background: transparent !important;
@@ -198,31 +198,31 @@
   /* Official header styles */
   .official-header {
     text-align: center !important;
-    margin-bottom: 25px !important;
+    margin-bottom: 12px !important;
     font-weight: bold !important;
     color: black !important;
   }
 
   .official-meta {
     width: 100% !important;
-    margin-top: 15px !important;
-    margin-bottom: 15px !important;
-    font-size: 11px !important;
+    margin-top: 8px !important;
+    margin-bottom: 8px !important;
+    font-size: 10px !important;
   }
 
   .official-text {
-    font-size: 12px !important;
-    line-height: 1.6 !important;
-    margin-bottom: 25px !important;
+    font-size: 10.5px !important;
+    line-height: 1.35 !important;
+    margin-bottom: 12px !important;
     text-align: justify !important;
   }
 
   .official-signature {
     float: right !important;
     text-align: center !important;
-    margin-top: 30px !important;
-    margin-right: 20px !important;
-    font-size: 12px !important;
+    margin-top: 15px !important;
+    margin-right: 10px !important;
+    font-size: 10.5px !important;
   }
 
   /* Landscape çarşaf styles */

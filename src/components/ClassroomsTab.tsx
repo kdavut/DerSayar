@@ -112,6 +112,17 @@ export default function ClassroomsTab() {
       animate={{ opacity: 1 }}
       className="grid grid-cols-1 lg:grid-cols-12 gap-6"
     >
+      {/* Bilgilendirme Bannerı */}
+      <div className="col-span-1 lg:col-span-12 bg-blue-50 border border-blue-200 rounded-2xl p-4 flex items-start space-x-3 text-blue-900 shadow-sm">
+        <span className="text-lg shrink-0">💡</span>
+        <div>
+          <h4 className="text-xs font-bold text-blue-950 uppercase tracking-wide">Önemli Atölye Planlama Önerisi</h4>
+          <p className="text-[11px] leading-relaxed mt-0.5 text-blue-800 font-medium">
+            Tüm ders programı yerleştirildikten sonra atölyelere ders atamanız daha uygun olur. Önce ana programı hazırlayıp dersleri yerleştirin, ardından atölyeleri tanımlayıp buraya atayabilirsiniz.
+          </p>
+        </div>
+      </div>
+
       {/* Sol Atölye Kaydı */}
       <div className="lg:col-span-4 bg-white p-6 rounded-2xl border border-slate-200/80 shadow-sm flex flex-col h-fit text-slate-800">
         <h2 className="text-base font-bold text-slate-800 mb-4 flex items-center space-x-2 shrink-0">
@@ -300,8 +311,23 @@ export default function ClassroomsTab() {
                             updateState((draft) => {
                               const aDraft = draft.assignments.find(x => x.id === assign.id);
                               if (aDraft) {
-                                aDraft.classroomId = ""; // clear classroom allocation
+                                aDraft.classroomId = null; // clear classroom allocation
                               }
+                              // Clear classroomId in scheduled slots for this assignment
+                              Object.keys(draft.schedule).forEach((classId) => {
+                                const classSchedules = draft.schedule[classId];
+                                if (classSchedules) {
+                                  Object.keys(classSchedules).forEach((dIdxStr) => {
+                                    const dIdx = parseInt(dIdxStr, 10);
+                                    const periods = classSchedules[dIdx] || [];
+                                    for (let p = 0; p < periods.length; p++) {
+                                      if (periods[p]?.assignmentId === assign.id) {
+                                        periods[p]!.classroomId = null;
+                                      }
+                                    }
+                                  });
+                                }
+                              });
                             });
                             showToast("Atölye ataması başarıyla kaldırıldı.", "success");
                           }}
@@ -348,13 +374,83 @@ export default function ClassroomsTab() {
                       showToast("Lütfen atanacak bir sınıf ve ders seçin.", "error");
                       return;
                     }
+                    
+                    let unplacedCount = 0;
+                    let workshopConflictCount = 0;
                     updateState((draft) => {
                       const aDraft = draft.assignments.find(x => x.id === selectedAssignmentToAssignRoom);
                       if (aDraft) {
                         aDraft.classroomId = selectedRoomId;
                       }
+                      
+                      const currentRoomObj = draft.classrooms.find(r => r.id === selectedRoomId);
+                      
+                      // Identify existing assignments assigned to this workshop (excluding the current one)
+                      const existingAssignedIds = new Set(
+                        draft.assignments
+                          .filter(a => a.classroomId === selectedRoomId && a.id !== selectedAssignmentToAssignRoom)
+                          .map(a => a.id)
+                      );
+
+                      // Map out which days and periods are already occupied in the workshop by other assignments
+                      const occupiedWorkshopHours = new Set<string>(); // formatted as "dIdx-pIdx"
+                      Object.keys(draft.schedule).forEach((classId) => {
+                        const classSchedules = draft.schedule[classId];
+                        if (classSchedules) {
+                          Object.keys(classSchedules).forEach((dIdxStr) => {
+                            const dIdx = parseInt(dIdxStr, 10);
+                            const periods = classSchedules[dIdx] || [];
+                            for (let p = 0; p < periods.length; p++) {
+                              const slot = periods[p];
+                              if (slot && slot.assignmentId && existingAssignedIds.has(slot.assignmentId)) {
+                                occupiedWorkshopHours.add(`${dIdx}-${p}`);
+                              }
+                            }
+                          });
+                        }
+                      });
+                      
+                      // Update existing schedule slots with this classroom ID
+                      Object.keys(draft.schedule).forEach((classId) => {
+                        const classSchedules = draft.schedule[classId];
+                        if (classSchedules) {
+                          Object.keys(classSchedules).forEach((dIdxStr) => {
+                            const dIdx = parseInt(dIdxStr, 10);
+                            const periods = classSchedules[dIdx] || [];
+                            for (let p = 0; p < periods.length; p++) {
+                              if (periods[p]?.assignmentId === selectedAssignmentToAssignRoom) {
+                                // Check if classroom is unavailable at this day/period
+                                const isRoomUnavailable = currentRoomObj && currentRoomObj.unavailability?.[dIdx]?.[p];
+                                // Check if classroom is already occupied by an existing assignment at this day/period
+                                const isRoomOccupied = occupiedWorkshopHours.has(`${dIdx}-${p}`);
+
+                                if (isRoomUnavailable || isRoomOccupied) {
+                                  // Clear this slot (unplace) due to conflict with classroom unavailability or prior occupant
+                                  periods[p] = null;
+                                  if (isRoomOccupied) {
+                                    workshopConflictCount++;
+                                  } else {
+                                    unplacedCount++;
+                                  }
+                                } else {
+                                  periods[p]!.classroomId = selectedRoomId;
+                                }
+                              }
+                            }
+                          });
+                        }
+                      });
                     });
-                    showToast("Sınıf ve ders başarıyla bu atölyeye atandı.", "success");
+
+                    if (workshopConflictCount > 0 && unplacedCount > 0) {
+                      showToast(`${workshopConflictCount} saatlik ders başka bir sınıfla atölye çakışması nedeniyle, ${unplacedCount} saatlik ders ise atölyenin kapalı olması nedeniyle programdan kaldırıldı (yerleşmedi).`, "info");
+                    } else if (workshopConflictCount > 0) {
+                      showToast(`${workshopConflictCount} saatlik ders, bu saatlerde atölye başka bir ders için dolu olduğundan programdan kaldırıldı (yerleşmedi).`, "info");
+                    } else if (unplacedCount > 0) {
+                      showToast(`${unplacedCount} saatlik ders, atölyenin kapalı olduğu saatlere denk geldiği için programdan kaldırıldı (yerleşmedi).`, "info");
+                    } else {
+                      showToast("Sınıf ve ders başarıyla bu atölyeye atandı.", "success");
+                    }
                     setSelectedAssignmentToAssignRoom(""); // reset selection
                   }}
                   className="sm:w-auto w-full px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs rounded-lg transition duration-150 flex items-center justify-center space-x-1.5 shadow-md shadow-emerald-100 cursor-pointer border-0"
