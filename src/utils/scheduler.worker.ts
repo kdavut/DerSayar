@@ -458,7 +458,8 @@ function tryBacktrackingSwap(
   block: BlockToPlace,
   numDays: number,
   numPeriods: number,
-  assignments: LessonAssignment[]
+  assignments: LessonAssignment[],
+  priorityAssignmentIds?: string[]
 ): boolean {
   const classId = block.assignment.classId;
   const classObj = classesMap.get(classId);
@@ -490,7 +491,7 @@ function tryBacktrackingSwap(
             const nameLower = (course.name || "").toLowerCase();
             const codeLower = (course.code || "").toLowerCase();
             return nameLower.includes("şef") || nameLower.includes("sef") || nameLower.includes("koor") || nameLower.includes("koordinatör") || codeLower.includes("şef") || codeLower.includes("sef") || codeLower.includes("koor");
-          })();
+          })() || !!(priorityAssignmentIds && priorityAssignmentIds.includes(slot.assignmentId));
 
           if (isLocked) {
             canPlaceHere = false;
@@ -948,7 +949,8 @@ self.onmessage = async (e: MessageEvent) => {
           block,
           numDays,
           numPeriods,
-          assignments
+          assignments,
+          options?.priorityAssignmentIds
         );
       }
 
@@ -1005,13 +1007,13 @@ self.onmessage = async (e: MessageEvent) => {
             const course = coursesMap.get(slot1.courseId);
             if (!course) return false;
             return (course.name || "").toLowerCase().includes("şef") || (course.name || "").toLowerCase().includes("koor");
-          })());
+          })() || !!(options?.priorityAssignmentIds && options.priorityAssignmentIds.includes(slot1.assignmentId)));
 
           const isLocked2 = slot2 && (slot2.isLocked === true || (() => {
             const course = coursesMap.get(slot2.courseId);
             if (!course) return false;
             return (course.name || "").toLowerCase().includes("şef") || (course.name || "").toLowerCase().includes("koor");
-          })());
+          })() || !!(options?.priorityAssignmentIds && options.priorityAssignmentIds.includes(slot2.assignmentId)));
 
           if (!isLocked1 && !isLocked2) {
             // Unregister old occupancies
@@ -1099,7 +1101,8 @@ self.onmessage = async (e: MessageEvent) => {
         const classObj = classesMap.get(classId);
         for (let offset = 0; offset < block.size; offset++) {
           const currentSlot = currentSchedule[classId]?.[d]?.[p + offset];
-          if (classObj?.unavailability[d]?.[p + offset] === true || currentSlot?.isLocked === true) {
+          const isCurrentSlotLocked = currentSlot && (currentSlot.isLocked === true || !!(options?.priorityAssignmentIds && options.priorityAssignmentIds.includes(currentSlot.assignmentId)));
+          if (classObj?.unavailability[d]?.[p + offset] === true || isCurrentSlotLocked) {
             hasLockedCell = true;
             break;
           }
