@@ -3962,7 +3962,7 @@ const handleSetCustomDistribution = (assignmentId: string, distribution: string)
                       }}
                       className="w-full py-2.5 bg-rose-50 hover:bg-rose-100 active:bg-rose-200 text-rose-600 font-bold text-xs rounded-xl transition-all cursor-pointer shadow-sm hover:shadow"
                     >
-                      Durdur (Mevcutları Kilitle)
+                      Durdur
                     </button>
                   </div>
                 </div>
