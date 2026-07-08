@@ -3928,9 +3928,9 @@ const handleSetCustomDistribution = (assignmentId: string, distribution: string)
                     <RefreshCw className="w-5 h-5 animate-spin" />
                   </div>
                   
-                  <div className="space-y-1">
-                    <h3 className="text-base font-bold text-slate-800 tracking-tight">Yerleştirme yapılıyor...</h3>
-                    <p className="text-xs text-slate-400">Yapay zeka algoritması kısıtları optimize ediyor</p>
+                  <div className="space-y-1 animate-pulse">
+                    <h3 className="text-base font-bold text-slate-800 tracking-tight">DerSayar Algoritması hesaplamalar yapıyor...</h3>
+                    <p className="text-xs text-slate-400">Kısıtlar optimize ediliyor</p>
                   </div>
 
                   {/* Minimalist Live Counters Grid */}
