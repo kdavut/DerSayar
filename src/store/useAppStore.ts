@@ -2,7 +2,7 @@ import React from 'react';
 import { create } from 'zustand';
 import { AppState, FullHistoryState } from '../types';
 import { generateDemoState, createEmptyUnavailability } from '../utils/demoData';
-import { ProgressUpdate, generateAutomaticScheduleAsync } from '../utils/scheduler';
+import { ProgressUpdate, generateAutomaticScheduleAsync, stopActiveScheduler } from '../utils/scheduler';
 
 const LOCAL_STORAGE_KEY = "okul_ders_programi_state";
 
@@ -174,6 +174,9 @@ interface AppStoreActions {
   setIsAnalysisOpen: (isOpen: boolean) => void;
   setSelectedAssignmentToAssignRoom: (id: string) => void;
   setSearchQuery: (query: string) => void;
+  verileri_hazırla: () => Promise<AppState>;
+  dersleri_yerleştir: (preparedState: AppState, keepExisting: boolean, targets?: { classIds?: string[], teacherIds?: string[] }) => Promise<any>;
+  stopAutomaticScheduler: () => void;
   runAutomaticScheduler: (keepExisting: boolean, targets?: { classIds?: string[], teacherIds?: string[] }) => Promise<void>;
   handleAutoGenerateClick: () => void;
   handleScheduleSelectedTeacher: () => void;
@@ -766,30 +769,150 @@ export const useAppStore = create<AppStore>((set) => ({
   setSelectedAssignmentToAssignRoom: (selectedAssignmentToAssignRoom) => set({ selectedAssignmentToAssignRoom }),
   setSearchQuery: (searchQuery) => set({ searchQuery }),
 
+  verileri_hazırla: async () => {
+    // Wait briefly for any React renders or state flushes
+    await new Promise(resolve => setTimeout(resolve, 50));
+    const store = useAppStore.getState();
+    // If user is logged in and state is completely empty, try to load from cloud first
+    if (store.user && store.historyState.current.assignments.length === 0) {
+      await store.loadFromCloud();
+    }
+    return useAppStore.getState().historyState.current;
+  },
+
+  dersleri_yerleştir: async (preparedState, keepExisting, targets) => {
+    const store = useAppStore.getState();
+    const result = await generateAutomaticScheduleAsync(preparedState, (progress) => {
+      store.setSchedulingProgress(progress);
+    }, {
+      keepExisting,
+      targetClassIds: targets?.classIds,
+      targetTeacherIds: targets?.teacherIds,
+      deepSearch: store.deepSearch,
+      numTrials: store.numTrials
+    });
+    return result;
+  },
+
+  stopAutomaticScheduler: () => {
+    const store = useAppStore.getState();
+    
+    // Terminate the active worker
+    stopActiveScheduler();
+    
+    const progress = store.schedulingProgress;
+    if (progress && progress.bestSchedule) {
+      // Create a deep copy of the best schedule found so far
+      const lockedSchedule = JSON.parse(JSON.stringify(progress.bestSchedule));
+      
+      // Mark all placed non-null slots as isLocked: true
+      for (const classId of Object.keys(lockedSchedule)) {
+        const classSched = lockedSchedule[classId];
+        if (classSched) {
+          for (const day of Object.keys(classSched)) {
+            const dayIndex = parseInt(day);
+            const slots = classSched[dayIndex];
+            if (slots) {
+              for (let p = 0; p < slots.length; p++) {
+                if (slots[p]) {
+                  slots[p].isLocked = true;
+                }
+              }
+            }
+          }
+        }
+      }
+      
+      // Update state's schedule with this locked best-intermediate schedule
+      store.updateState((draft) => {
+        draft.schedule = lockedSchedule;
+      });
+
+      // Compute diagnostics and reports on the main thread for the unplaced items
+      const { settings, teachers, classes, assignments } = store.historyState.current;
+      const numDays = settings.days.length;
+      const numPeriods = settings.periodsPerDay;
+      const scheduledHoursCount: { [assignId: string]: number } = {};
+      
+      for (const cId of Object.keys(lockedSchedule)) {
+        for (let d = 0; d < numDays; d++) {
+          const daySlots = lockedSchedule[cId][d];
+          if (daySlots) {
+            for (let p = 0; p < numPeriods; p++) {
+              const slot = daySlots[p];
+              if (slot) {
+                scheduledHoursCount[slot.assignmentId] = (scheduledHoursCount[slot.assignmentId] || 0) + 1;
+              }
+            }
+          }
+        }
+      }
+
+      const unplacedReports: any[] = [];
+      for (const assign of assignments) {
+        const placed = scheduledHoursCount[assign.id] || 0;
+        const remaining = assign.weeklyHours - placed;
+        if (remaining > 0) {
+          const teacherNames = assign.teacherId
+            ? assign.teacherId.split(",").map(id => teachers.find(t => t.id === id)?.name || id).join(", ")
+            : "Öğretmensiz";
+
+          unplacedReports.push({
+            id: assign.id,
+            assignmentId: assign.id,
+            classId: assign.classId,
+            className: classes.find(c => c.id === assign.classId)?.name || assign.classId,
+            courseId: assign.courseId,
+            courseName: store.historyState.current.courses?.find((c: any) => c.id === assign.courseId)?.name || assign.courseId,
+            teacherId: assign.teacherId || "",
+            teacherName: teacherNames,
+            size: remaining,
+            reason: "Kullanıcı tarafından durduruldu.",
+            suggestions: ["Ders programını tekrar başlatabilir veya kalan dersleri manuel yerleştirebilirsiniz."]
+          });
+        }
+      }
+
+      store.setUnplacedReports(unplacedReports);
+      store.showToast("Planlama işlemi durduruldu. Mevcut yerleşimler kilitlendi ve korundu.", "info");
+    } else {
+      store.showToast("Planlama işlemi durduruldu.", "info");
+    }
+
+    store.setIsScheduling(false);
+    store.setSchedulingProgress(null);
+  },
+
   runAutomaticScheduler: async (keepExisting, targets) => {
     const store = useAppStore.getState();
-    const state = store.historyState.current;
     
     store.setIsScheduling(true);
     store.setSchedulingProgress({
       phase: "backtracking",
       percent: 5,
-      message: "Ders programı çözücü başlatılıyor...",
+      message: "Veriler hazırlanıyor...",
       steps: 0
     });
     store.setUnplacedReports([]);
     store.setIsSchedulingOptionsOpen(false);
 
     try {
-      const result = await generateAutomaticScheduleAsync(state, (progress) => {
-        store.setSchedulingProgress(progress);
-      }, {
-        keepExisting,
-        targetClassIds: targets?.classIds,
-        targetTeacherIds: targets?.teacherIds,
-        deepSearch: store.deepSearch,
-        numTrials: store.numTrials
+      // 1. Prepare data
+      const preparedState = await store.verileri_hazırla();
+      
+      const totalHours = preparedState.assignments.reduce((sum, a) => sum + a.weeklyHours, 0);
+      store.setSchedulingProgress({
+        phase: "backtracking",
+        percent: 10,
+        message: "Ders programı çözücü başlatılıyor...",
+        steps: 0,
+        totalHours,
+        placedHours: 0,
+        unplacedHours: totalHours
       });
+
+      // 2. Run placement
+      const result = await store.dersleri_yerleştir(preparedState, keepExisting, targets);
 
       store.updateState((draft) => {
         draft.schedule = result.schedule;
@@ -811,8 +934,10 @@ export const useAppStore = create<AppStore>((set) => ({
       console.error(err);
       store.showToast("Ders programı yerleştirilirken beklenmedik bir hata oluştu!", "error");
     } finally {
-      store.setIsScheduling(false);
-      store.setSchedulingProgress(null);
+      if (useAppStore.getState().isScheduling) {
+        store.setIsScheduling(false);
+        store.setSchedulingProgress(null);
+      }
     }
   },
 
