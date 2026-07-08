@@ -697,6 +697,7 @@ export async function generateAutomaticScheduleAsync(
     keepExisting?: boolean;
     targetClassIds?: string[];
     targetTeacherIds?: string[];
+    priorityAssignmentIds?: string[];
     numTrials?: number;
     deepSearch?: boolean;
   }
