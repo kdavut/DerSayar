@@ -201,6 +201,13 @@ export default function ScheduleTab({
     teacherName: string;
   } | null>(null);
 
+  const [assignmentContextMenu, setAssignmentContextMenu] = useState<{
+    visible: boolean;
+    x: number;
+    y: number;
+    assignmentId: string;
+  } | null>(null);
+
   const [draggedSource, setDraggedSource] = useState<{ dIdx: number; pIdx: number; classId: string } | null>(null);
   const [draggedOverCell, setDraggedOverCell] = useState<{ dIdx: number; pIdx: number } | null>(null);
 
@@ -1434,122 +1441,111 @@ const handleNavigateToTeacherFromCell = (dIdx: number, pIdx: number) => {
     }
   };
 
-  const handleForceLessonAt = (dIdx: number, pIdx: number) => {
-    const { slot, classId } = getSlotAt(dIdx, pIdx);
-    if (!slot || !classId) {
-      showToast("Bu hücrede zorlanacak bir ders bulunamadı!", "error");
-      return;
-    }
-
-    const primaryAssign = state.assignments.find((a) => a.id === slot.assignmentId);
-    if (!primaryAssign) {
+  const handleForceLesson = async (assignmentId: string) => {
+    const assign = state.assignments.find((a) => a.id === assignmentId);
+    if (!assign) {
       showToast("Ders ataması bulunamadı!", "error");
       return;
     }
 
-    const tIds = primaryAssign.teacherId ? primaryAssign.teacherId.split(",").map(id => id.trim()).filter(Boolean) : [];
+    const tIds = assign.teacherId ? assign.teacherId.split(",").map(id => id.trim()).filter(Boolean) : [];
     const numDays = state.settings.days.length;
     const numPeriods = state.settings.periodsPerDay;
 
-    const updatedSchedule = JSON.parse(JSON.stringify(state.schedule));
-    const messages: string[] = [];
+    // Find all assignments belonging to the same teacher(s)
+    const teacherAssigns = state.assignments.filter(a => 
+      a.teacherId && a.teacherId.split(',').map(x => x.trim()).some(id => tIds.includes(id))
+    );
+    const teacherAssignIds = new Set([assignmentId, ...teacherAssigns.map(a => a.id)]);
 
-    for (const tId of tIds) {
-      const teacherName = teachersMap.get(tId)?.name || "Öğretmen";
+    // Clone the current schedule
+    const clearedSchedule = JSON.parse(JSON.stringify(state.schedule));
 
-      for (const otherClassId of Object.keys(updatedSchedule)) {
-        if (otherClassId === classId) continue;
-
-        const otherSlot = updatedSchedule[otherClassId]?.[dIdx]?.[pIdx];
-        if (!otherSlot || !otherSlot.teacherId) continue;
-
-        const otherTIds = otherSlot.teacherId.split(",").map((id: string) => id.trim()).filter(Boolean);
-        if (otherTIds.includes(tId) && otherSlot.assignmentId !== slot.assignmentId) {
-          let relocated = false;
-
-          for (let nd = 0; nd < numDays; nd++) {
-            for (let np = 0; np < numPeriods; np++) {
-              if (updatedSchedule[otherClassId]?.[nd]?.[np] !== null) continue;
-
-              const classObj = classesMap.get(otherClassId);
-              if (classObj?.unavailability[nd]?.[np]) continue;
-
-              const teachersAvailable = otherTIds.every((id: string) => {
-                const tObj = teachersMap.get(id);
-                if (tObj?.unavailability[nd]?.[np]) return false;
-                for (const cId of Object.keys(updatedSchedule)) {
-                  if (updatedSchedule[cId]?.[nd]?.[np]?.teacherId?.split(",").map((x: string) => x.trim()).includes(id)) {
-                    return false;
-                  }
-                }
-                return true;
-              });
-
-              if (!teachersAvailable) continue;
-
-              if (otherSlot.classroomId) {
-                const rObj = classroomsMap.get(otherSlot.classroomId);
-                if (rObj?.unavailability[nd]?.[np]) continue;
-                let roomBusy = false;
-                for (const cId of Object.keys(updatedSchedule)) {
-                  if (updatedSchedule[cId]?.[nd]?.[np]?.classroomId === otherSlot.classroomId) {
-                    roomBusy = true;
-                    break;
-                  }
-                }
-                if (roomBusy) continue;
+    // Clear all slots of this teacher (or this assignment) to give the solver freedom to rearrange
+    for (const cId of Object.keys(clearedSchedule)) {
+      const classSched = clearedSchedule[cId];
+      if (classSched) {
+        for (let d = 0; d < numDays; d++) {
+          const daySched = classSched[d];
+          if (daySched) {
+            for (let p = 0; p < numPeriods; p++) {
+              const slot = daySched[p];
+              if (slot && teacherAssignIds.has(slot.assignmentId)) {
+                daySched[p] = null;
               }
-
-              if (classObj?.dailyPeriods) {
-                const maxPeriodsThisDay = classObj.dailyPeriods[nd];
-                if (maxPeriodsThisDay !== undefined && np >= maxPeriodsThisDay) continue;
-              }
-
-              if (!updatedSchedule[otherClassId][nd]) {
-                updatedSchedule[otherClassId][nd] = Array(numPeriods).fill(null);
-              }
-              updatedSchedule[otherClassId][nd][np] = { ...otherSlot };
-              relocated = true;
-              messages.push(
-                `"${teacherName}" öğretmenin çakışan dersi "${classObj?.name || otherClassId}" sınıfında ${state.settings.days[nd]} ${np + 1}. saate taşındı.`
-              );
-              break;
             }
-            if (relocated) break;
-          }
-
-          if (!relocated) {
-            updatedSchedule[otherClassId][dIdx][pIdx] = null;
-            const otherClassName = classesMap.get(otherClassId)?.name || otherClassId;
-            messages.push(
-              `"${teacherName}" öğretmenin çakışan dersi "${otherClassName}" sınıfından kaldırıldı.`
-            );
           }
         }
       }
     }
 
-    if (!updatedSchedule[classId]) {
-      updatedSchedule[classId] = Array(numDays).fill(null).map(() => Array(numPeriods).fill(null));
-    }
-    if (!updatedSchedule[classId][dIdx]) {
-      updatedSchedule[classId][dIdx] = Array(numPeriods).fill(null);
-    }
-    updatedSchedule[classId][dIdx][pIdx] = {
-      ...slot,
-      isLocked: true
-    };
-
-    updateState((draft) => {
-      draft.schedule = updatedSchedule;
+    const courseName = coursesMap.get(assign.courseId)?.name || "Ders";
+    showToast(`"${courseName}" dersi zorlanarak tüm saatleri yerleştirilmeye çalışılıyor...`, "info");
+    setIsScheduling(true);
+    setSchedulingProgress({
+      phase: "backtracking",
+      percent: 15,
+      message: `Öğretmenin dersleri temizlendi, yeniden çözülüyor...`,
+      steps: 0
     });
 
-    const mainMsg = `"${primaryAssign.courseId ? (coursesMap.get(primaryAssign.courseId)?.name || "Ders") : "Ders"}" başarıyla bu saate zorlandı ve kilitlendi!`;
-    if (messages.length > 0) {
-      showToast(`${mainMsg} (${messages.join(" / ")})`, "success");
-    } else {
-      showToast(mainMsg, "success");
+    try {
+      const stateWithClearedSlots = {
+        ...state,
+        schedule: clearedSchedule
+      };
+
+      // Run automatic scheduler specifically for this teacher, with target assignment prioritized
+      const result = await generateAutomaticScheduleAsync(stateWithClearedSlots, (prog) => {
+        setSchedulingProgress({
+          phase: prog.phase,
+          percent: Math.min(95, Math.round(15 + prog.percent * 0.8)),
+          message: `Ders yerleştiriliyor: ${prog.message}`,
+          steps: prog.steps
+        });
+      }, {
+        keepExisting: true,
+        targetTeacherIds: tIds.length > 0 ? tIds : undefined,
+        targetClassIds: tIds.length === 0 ? [assign.classId] : undefined,
+        priorityAssignmentIds: [assignmentId],
+        deepSearch: true,
+        numTrials: 5 // Try harder to find a valid arrangement
+      });
+
+      const placedCount = countPlacedHoursOfAssignment(result.schedule, assignmentId, numDays, numPeriods);
+
+      if (placedCount === assign.weeklyHours) {
+        updateState((draft) => {
+          draft.schedule = result.schedule;
+        });
+        showToast(`"${courseName}" dersinin tüm saatleri (${placedCount}/${assign.weeklyHours}) başarıyla yerleştirildi!`, "success");
+      } else {
+        const currentPlaced = countPlacedHoursOfAssignment(state.schedule, assignmentId, numDays, numPeriods);
+        if (placedCount > currentPlaced) {
+          updateState((draft) => {
+            draft.schedule = result.schedule;
+          });
+          showToast(`"${courseName}" dersi kısmen yerleştirilebildi (${placedCount}/${assign.weeklyHours} saat).`, "info");
+        } else {
+          showToast(`"${courseName}" dersi için uygun yerleşim bulunamadı! Çakışan öğretmen saatlerini veya sınıf kapalılıklarını kontrol edin.`, "error");
+        }
+      }
+    } catch (error) {
+      console.error("Ders zorlanırken hata:", error);
+      showToast("Ders zorlanırken bir hata oluştu!", "error");
+    } finally {
+      setIsScheduling(false);
+      setSchedulingProgress(null);
     }
+  };
+
+  const handleForceLessonAt = (dIdx: number, pIdx: number) => {
+    const { slot } = getSlotAt(dIdx, pIdx);
+    if (!slot) {
+      showToast("Bu hücrede zorlanacak bir ders bulunamadı!", "error");
+      return;
+    }
+    handleForceLesson(slot.assignmentId);
   };
 
 const handleSetCustomClosureAt = (dIdx: number, pIdx: number, label: string) => {
@@ -1652,6 +1648,7 @@ const handleSetCustomDistribution = (assignmentId: string, distribution: string)
     const handleOutsideClick = () => {
       setContextMenu(null);
       setTeacherContextMenu(null);
+      setAssignmentContextMenu(null);
     };
     window.addEventListener("click", handleOutsideClick);
     return () => window.removeEventListener("click", handleOutsideClick);
@@ -3088,27 +3085,72 @@ const handleSetCustomDistribution = (assignmentId: string, distribution: string)
                                           e.dataTransfer.setData("text/plain", JSON.stringify({ assignmentId: a.id }));
                                           e.dataTransfer.effectAllowed = "copy";
                                         }}
-                                        className={`p-2.5 flex items-center justify-between cursor-pointer border-l-4 transition-all duration-150 ${
+                                        className={`p-2.5 flex flex-col justify-center cursor-pointer border-l-4 transition-all duration-150 ${
                                           isSelected 
                                             ? "bg-blue-50/80 border-blue-600 shadow-sm" 
                                             : "hover:bg-slate-50 border-transparent"
                                         }`}
                                       >
-                                        <div>
-                                          <div className="font-bold text-slate-800 text-[11px] flex items-center gap-1.5">
-                                            {course?.name} <span className="text-[9px] text-slate-400 font-mono font-medium">({course?.code})</span>
-                                            {isSelected && (
-                                              <span className="text-[8px] bg-blue-100 text-blue-800 font-black px-1 rounded">AKTİF</span>
-                                            )}
+                                        <div className="flex items-center justify-between w-full">
+                                          <div>
+                                            <div className="font-bold text-slate-800 text-[11px] flex items-center gap-1.5">
+                                              {course?.name} <span className="text-[9px] text-slate-400 font-mono font-medium">({course?.code})</span>
+                                              {isSelected && (
+                                                <span className="text-[8px] bg-blue-100 text-blue-800 font-black px-1 rounded">AKTİF</span>
+                                              )}
+                                            </div>
+                                            <div className="text-[10px] text-slate-500 font-semibold mt-0.5">Sınıf: {className}</div>
                                           </div>
-                                          <div className="text-[10px] text-slate-500 font-semibold mt-0.5">Sınıf: {className}</div>
+                                          <div className="flex items-center gap-2 shrink-0">
+                                            <span className="text-[10px] font-mono text-slate-500">Atanan: <strong>{a.weeklyHours} s</strong></span>
+                                            <span className={`text-xs font-mono font-bold px-2 py-0.5 rounded-lg ${isComplete ? "bg-emerald-50 text-emerald-700 border border-emerald-100" : "bg-rose-50 text-rose-700 border border-rose-100"}`}>
+                                              Yerleşen: {placedHours} s
+                                            </span>
+                                          </div>
                                         </div>
-                                        <div className="flex items-center gap-2">
-                                          <span className="text-[10px] font-mono text-slate-500">Atanan: <strong>{a.weeklyHours} s</strong></span>
-                                          <span className={`text-xs font-mono font-bold px-2 py-0.5 rounded-lg ${isComplete ? "bg-emerald-50 text-emerald-700 border border-emerald-100" : "bg-rose-50 text-rose-700 border border-rose-100"}`}>
-                                            Yerleşen: {placedHours} s
-                                          </span>
-                                        </div>
+
+                                        {isSelected && (
+                                          <div 
+                                            className="mt-2.5 pt-2 border-t border-blue-100 flex flex-wrap gap-1.5"
+                                            onClick={(e) => e.stopPropagation()}
+                                          >
+                                            <button
+                                              onClick={() => {
+                                                setDistributionDialog({
+                                                  assignmentId: a.id,
+                                                  current: a.customPlacementMode || ""
+                                                });
+                                                setDistributionInput(a.customPlacementMode || "");
+                                              }}
+                                              className="px-2 py-1 bg-blue-600 hover:bg-blue-700 text-white font-extrabold rounded-md text-[10px] flex items-center gap-1 transition-all shadow-sm cursor-pointer"
+                                            >
+                                              <Edit3 className="w-3 h-3 text-white" />
+                                              <span>Özel Dağıtım Belirle</span>
+                                            </button>
+
+                                            <button
+                                              onClick={() => {
+                                                setScheduleViewMode("class");
+                                                setViewingEntityId(a.classId);
+                                                showToast(`${classesMap.get(a.classId)?.name || "Sınıf"} programına geçildi.`, "success");
+                                              }}
+                                              className="px-2 py-1 bg-indigo-600 hover:bg-indigo-700 text-white font-extrabold rounded-md text-[10px] flex items-center gap-1 transition-all shadow-sm cursor-pointer"
+                                            >
+                                              <School className="w-3 h-3 text-white" />
+                                              <span>Sınıfa Bağlan</span>
+                                            </button>
+
+                                            <button
+                                              onClick={() => {
+                                                handleForceLesson(a.id);
+                                              }}
+                                              className="px-2 py-1 bg-amber-600 hover:bg-amber-700 text-white font-extrabold rounded-md text-[10px] flex items-center gap-1 transition-all shadow-sm cursor-pointer"
+                                            >
+                                              <Flame className="w-3 h-3 text-white fill-amber-100/35" />
+                                              <span>Bu Dersi Zorla</span>
+                                            </button>
+                                          </div>
+                                        )}
                                       </div>
                                     );
                                   })
@@ -3156,27 +3198,75 @@ const handleSetCustomDistribution = (assignmentId: string, distribution: string)
                                           e.dataTransfer.setData("text/plain", JSON.stringify({ assignmentId: a.id }));
                                           e.dataTransfer.effectAllowed = "copy";
                                         }}
-                                        className={`p-2.5 flex items-center justify-between cursor-pointer border-l-4 transition-all duration-150 ${
+                                        className={`p-2.5 flex flex-col justify-center cursor-pointer border-l-4 transition-all duration-150 ${
                                           isSelected 
                                             ? "bg-blue-50/80 border-blue-600 shadow-sm" 
                                             : "hover:bg-slate-50 border-transparent"
                                         }`}
                                       >
-                                        <div>
-                                          <div className="font-bold text-slate-800 text-[11px] flex items-center gap-1.5">
-                                            {course?.name} <span className="text-[9px] text-slate-400 font-mono font-medium">({course?.code})</span>
-                                            {isSelected && (
-                                              <span className="text-[8px] bg-blue-100 text-blue-800 font-black px-1 rounded">AKTİF</span>
-                                            )}
+                                        <div className="flex items-center justify-between w-full">
+                                          <div>
+                                            <div className="font-bold text-slate-800 text-[11px] flex items-center gap-1.5">
+                                              {course?.name} <span className="text-[9px] text-slate-400 font-mono font-medium">({course?.code})</span>
+                                              {isSelected && (
+                                                <span className="text-[8px] bg-blue-100 text-blue-800 font-black px-1 rounded">AKTİF</span>
+                                              )}
+                                            </div>
+                                            <div className="text-[10px] text-slate-500 font-semibold mt-0.5">Öğretmen: {teacherName}</div>
                                           </div>
-                                          <div className="text-[10px] text-slate-500 font-semibold mt-0.5">Öğretmen: {teacherName}</div>
+                                          <div className="flex items-center gap-2 shrink-0">
+                                            <span className="text-[10px] font-mono text-slate-500">Atanan: <strong>{a.weeklyHours} s</strong></span>
+                                            <span className={`text-xs font-mono font-bold px-2 py-0.5 rounded-lg ${isComplete ? "bg-emerald-50 text-emerald-700 border border-emerald-100" : "bg-rose-50 text-rose-700 border border-rose-100"}`}>
+                                              Yerleşen: {placedHours} s
+                                            </span>
+                                          </div>
                                         </div>
-                                        <div className="flex items-center gap-2">
-                                          <span className="text-[10px] font-mono text-slate-500">Atanan: <strong>{a.weeklyHours} s</strong></span>
-                                          <span className={`text-xs font-mono font-bold px-2 py-0.5 rounded-lg ${isComplete ? "bg-emerald-50 text-emerald-700 border border-emerald-100" : "bg-rose-50 text-rose-700 border border-rose-100"}`}>
-                                            Yerleşen: {placedHours} s
-                                          </span>
-                                        </div>
+
+                                        {isSelected && (
+                                          <div 
+                                            className="mt-2.5 pt-2 border-t border-blue-100 flex flex-wrap gap-1.5"
+                                            onClick={(e) => e.stopPropagation()}
+                                          >
+                                            <button
+                                              onClick={() => {
+                                                setDistributionDialog({
+                                                  assignmentId: a.id,
+                                                  current: a.customPlacementMode || ""
+                                                });
+                                                setDistributionInput(a.customPlacementMode || "");
+                                              }}
+                                              className="px-2 py-1 bg-blue-600 hover:bg-blue-700 text-white font-extrabold rounded-md text-[10px] flex items-center gap-1 transition-all shadow-sm cursor-pointer"
+                                            >
+                                              <Edit3 className="w-3 h-3 text-white" />
+                                              <span>Özel Dağıtım Belirle</span>
+                                            </button>
+
+                                            {a.teacherId && (
+                                              <button
+                                                onClick={() => {
+                                                  const firstTId = a.teacherId!.split(",")[0].trim();
+                                                  setScheduleViewMode("teacher");
+                                                  setViewingEntityId(firstTId);
+                                                  showToast(`${teachersMap.get(firstTId)?.name || "Öğretmen"} programına geçildi.`, "success");
+                                                }}
+                                                className="px-2 py-1 bg-teal-600 hover:bg-teal-700 text-white font-extrabold rounded-md text-[10px] flex items-center gap-1 transition-all shadow-sm cursor-pointer"
+                                              >
+                                                <User className="w-3 h-3 text-white" />
+                                                <span>Öğretmene Bağlan</span>
+                                              </button>
+                                            )}
+
+                                            <button
+                                              onClick={() => {
+                                                handleForceLesson(a.id);
+                                              }}
+                                              className="px-2 py-1 bg-amber-600 hover:bg-amber-700 text-white font-extrabold rounded-md text-[10px] flex items-center gap-1 transition-all shadow-sm cursor-pointer"
+                                            >
+                                              <Flame className="w-3 h-3 text-white fill-amber-100/35" />
+                                              <span>Bu Dersi Zorla</span>
+                                            </button>
+                                          </div>
+                                        )}
                                       </div>
                                     );
                                   })
@@ -3254,29 +3344,74 @@ const handleSetCustomDistribution = (assignmentId: string, distribution: string)
                                             e.dataTransfer.setData("text/plain", JSON.stringify({ assignmentId: a.id }));
                                             e.dataTransfer.effectAllowed = "copy";
                                           }}
-                                          className={`p-2 flex items-center justify-between cursor-pointer border-l-4 transition-all duration-150 ${
+                                          className={`p-2 flex flex-col justify-center cursor-pointer border-l-4 transition-all duration-150 ${
                                             isSelected 
                                               ? "bg-amber-50/80 border-amber-500 shadow-sm font-semibold" 
                                               : "hover:bg-slate-50 border-transparent"
                                           }`}
                                         >
-                                          <div className="max-w-[60%]">
-                                            <div className="font-bold text-slate-800 text-[10.5px] flex items-center gap-1.5 truncate">
-                                              {course?.name}
-                                              {isSelected && (
-                                                <span className="text-[8px] bg-amber-100 text-amber-800 font-black px-1 rounded shrink-0">AKTİF</span>
-                                              )}
+                                          <div className="flex items-center justify-between w-full">
+                                            <div className="max-w-[60%]">
+                                              <div className="font-bold text-slate-800 text-[10.5px] flex items-center gap-1.5 truncate">
+                                                {course?.name}
+                                                {isSelected && (
+                                                  <span className="text-[8px] bg-amber-100 text-amber-800 font-black px-1 rounded shrink-0">AKTİF</span>
+                                                )}
+                                              </div>
+                                              <div className="text-[9.5px] text-slate-500 font-semibold mt-0.5 truncate">
+                                                {className} • {teacherName}
+                                              </div>
                                             </div>
-                                            <div className="text-[9.5px] text-slate-500 font-semibold mt-0.5 truncate">
-                                              {className} • {teacherName}
+                                            <div className="flex flex-col items-end gap-1 shrink-0">
+                                              <span className="text-[9px] font-mono text-slate-500 leading-none">HDS: <strong>{a.weeklyHours} s</strong></span>
+                                              <span className={`text-[10px] font-mono font-bold px-1.5 py-0.5 rounded ${isComplete ? "bg-emerald-50 text-emerald-700 border border-emerald-100" : "bg-rose-50 text-rose-700 border border-rose-100"}`}>
+                                                Yerleşen: {placedHours}
+                                              </span>
                                             </div>
                                           </div>
-                                          <div className="flex flex-col items-end gap-1 shrink-0">
-                                            <span className="text-[9px] font-mono text-slate-500 leading-none">HDS: <strong>{a.weeklyHours} s</strong></span>
-                                            <span className={`text-[10px] font-mono font-bold px-1.5 py-0.5 rounded ${isComplete ? "bg-emerald-50 text-emerald-700 border border-emerald-100" : "bg-rose-50 text-rose-700 border border-rose-100"}`}>
-                                              Yerleşen: {placedHours}
-                                            </span>
-                                          </div>
+
+                                          {isSelected && (
+                                            <div 
+                                              className="mt-2 pt-2 border-t border-amber-200/50 flex flex-wrap gap-1"
+                                              onClick={(e) => e.stopPropagation()}
+                                            >
+                                              <button
+                                                onClick={() => {
+                                                  setDistributionDialog({
+                                                    assignmentId: a.id,
+                                                    current: a.customPlacementMode || ""
+                                                  });
+                                                  setDistributionInput(a.customPlacementMode || "");
+                                                }}
+                                                className="px-2 py-1 bg-amber-600 hover:bg-amber-700 text-white font-extrabold rounded-md text-[9px] flex items-center gap-1 transition-all shadow-sm cursor-pointer animate-fade-in"
+                                              >
+                                                <Edit3 className="w-2.5 h-2.5 text-white" />
+                                                <span>Dağıtım Belirle</span>
+                                              </button>
+
+                                              <button
+                                                onClick={() => {
+                                                  setScheduleViewMode("class");
+                                                  setViewingEntityId(a.classId);
+                                                  showToast(`${classesMap.get(a.classId)?.name || "Sınıf"} programına geçildi.`, "success");
+                                                }}
+                                                className="px-2 py-1 bg-indigo-600 hover:bg-indigo-700 text-white font-extrabold rounded-md text-[9px] flex items-center gap-1 transition-all shadow-sm cursor-pointer"
+                                              >
+                                                <School className="w-2.5 h-2.5 text-white" />
+                                                <span>Sınıfa Bağlan</span>
+                                              </button>
+
+                                              <button
+                                                onClick={() => {
+                                                  handleForceLesson(a.id);
+                                                }}
+                                                className="px-2 py-1 bg-rose-600 hover:bg-rose-700 text-white font-extrabold rounded-md text-[9px] flex items-center gap-1 transition-all shadow-sm cursor-pointer"
+                                              >
+                                                <Flame className="w-2.5 h-2.5 text-white fill-rose-100/35" />
+                                                <span>Zorla</span>
+                                              </button>
+                                            </div>
+                                          )}
                                         </div>
                                       );
                                     })
