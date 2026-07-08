@@ -598,8 +598,37 @@ function tryBacktrackingSwap(
 }
 
 // Listen to message from the main thread
+let stopped = false;
+
+function shuffle<T>(array: T[]): T[] {
+  const result = [...array];
+  for (let i = result.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [result[i], result[j]] = [result[j], result[i]];
+  }
+  return result;
+}
+
+function isSlotLocked(slot: ScheduleSlot | null, coursesMap: Map<string, Course>): boolean {
+  if (!slot) return false;
+  if (slot.isLocked === true) return true;
+  const course = coursesMap.get(slot.courseId);
+  if (!course) return false;
+  const nameLower = (course.name || "").toLowerCase();
+  const codeLower = (course.code || "").toLowerCase();
+  return nameLower.includes("şef") || nameLower.includes("sef") || nameLower.includes("koor") || nameLower.includes("koordinatör") || codeLower.includes("şef") || codeLower.includes("sef") || codeLower.includes("koor");
+}
+
 self.onmessage = async (e: MessageEvent) => {
-  const { state, options } = e.data;
+  const { type, state, options } = e.data;
+  
+  if (type === "stop") {
+    stopped = true;
+    return;
+  }
+
+  // Start Solver
+  stopped = false;
   const { settings, teachers, classes, classrooms, assignments, courses } = state;
   const numDays = settings.days.length;
   const numPeriods = settings.periodsPerDay;
@@ -776,60 +805,22 @@ self.onmessage = async (e: MessageEvent) => {
     teacherConstraints[t.id] = unavailCount;
   });
 
-  const getBlockPriority = (b: BlockToPlace) => {
-    if (options?.priorityAssignmentIds && options.priorityAssignmentIds.includes(b.assignment.id)) {
-      return 0;
-    }
-    const isMultiTeacher = b.assignment.teacherId && b.assignment.teacherId.split(",").length > 1;
-    if (isMultiTeacher) return 1;
-    
-    const classObj = classesMap.get(b.assignment.classId);
-    let isRestricted = false;
-    if (classObj) {
-      const hasUnavailDay = classObj.unavailability && Object.values(classObj.unavailability).some((day: boolean[]) => day && day.every((p: boolean) => p === true));
-      const hasDailyPeriodsRestriction = classObj.dailyPeriods && Object.values(classObj.dailyPeriods).some((pCount: number) => pCount !== undefined && pCount < numPeriods);
-      const isGrade12 = classObj.name && (classObj.name.includes("12") || classObj.name.toLowerCase().includes("mezun"));
-      isRestricted = !!(hasUnavailDay || hasDailyPeriodsRestriction || isGrade12);
-    }
-    
-    if (isRestricted) return 2;
-    return 3;
-  };
-
-  const getBlockTeacherHours = (b: BlockToPlace) => {
-    if (!b.assignment.teacherId) return 0;
-    const tIds = b.assignment.teacherId.split(",").map(id => id.trim()).filter(Boolean);
-    if (tIds.length === 0) return 0;
-    return Math.max(...tIds.map(id => teacherTotalHours[id] || 0));
-  };
-
-  const getBlockTeacherConstraints = (b: BlockToPlace) => {
-    if (!b.assignment.teacherId) return 0;
-    const tIds = b.assignment.teacherId.split(",").map(id => id.trim()).filter(Boolean);
-    if (tIds.length === 0) return 0;
-    return Math.max(...tIds.map(id => teacherConstraints[id] || 0));
-  };
-
-  // MULTI-START (3 trials with different seeds)
-  const numStarts = 3;
+  // Setup global trackers
   let bestGlobalSchedule = cloneSchedule(baseSchedule);
   let bestGlobalUnplaced: BlockToPlace[] = [...blocksToPlace];
   let bestGlobalPenalty = Infinity;
+  let bestGlobalUnplacedHours = blocksToPlace.reduce((sum, b) => sum + b.size, 0);
 
-  for (let trialIdx = 0; trialIdx < numStarts; trialIdx++) {
-    // Report progress
-    self.postMessage({
-      type: "progress",
-      progress: {
-        phase: "backtracking",
-        percent: Math.round((trialIdx / numStarts) * 100),
-        message: `Çözücü Başlatılıyor... Çalıştırma ${trialIdx + 1}/${numStarts}`,
-        steps: trialIdx
-      }
-    });
+  const startTime = Date.now();
+  let lastRestartTime = Date.now();
+  let totalIterations = 0;
+  let restartCount = 0;
+
+  // Infinite Solver & Randomized Restart Loop
+  while (!stopped) {
+    totalIterations++;
 
     const currentSchedule = cloneSchedule(baseSchedule);
-    const unplacedList: BlockToPlace[] = [];
 
     // Initialize high-performance occupancy grids for this trial
     const currentTeacherOccupancy: Record<string, (string | null)[][]> = {};
@@ -860,139 +851,377 @@ self.onmessage = async (e: MessageEvent) => {
       }
     }
 
-    // Sort blocks according to priority rules with stable structure + small multi-trial tie breaking perturbation
-    const blocksToProcess = [...blocksToPlace].sort((a, b) => {
-      const priA = getBlockPriority(a);
-      const priB = getBlockPriority(b);
-      if (priA !== priB) {
-        return priA - priB; // 1 then 2 then 3
-      }
-      
-      const noise = (Math.random() - 0.5) * 0.1;
+    // Shuffle and apply Tiered Priority Logic Heuristic sorting
+    const randomizedBlocks = shuffle([...blocksToPlace]);
 
-      if (priA === 1) {
-        // Multi-teacher: en yoğun olandan başla (most hours first)
-        const hoursA = getBlockTeacherHours(a);
-        const hoursB = getBlockTeacherHours(b);
-        if (Math.abs(hoursB - hoursA) > 0.1) {
-          return hoursB - hoursA;
-        }
-        return noise;
+    randomizedBlocks.sort((a, b) => {
+      // Priority 1: Multi-teacher lessons get absolute priority
+      const isMultiA = a.assignment.teacherId && a.assignment.teacherId.split(",").length > 1;
+      const isMultiB = b.assignment.teacherId && b.assignment.teacherId.split(",").length > 1;
+      if (isMultiA !== isMultiB) {
+        return isMultiA ? -1 : 1;
       }
+
+      // Priority 2: Sınıflar staja çıkıyorsa veya yüksek unavailability varsa
+      const classA = classesMap.get(a.assignment.classId);
+      const classB = classesMap.get(b.assignment.classId);
       
-      if (priA === 2) {
-        // Restricted classes: en yoğun dersi olan öğretmenden başla
-        const hoursA = getBlockTeacherHours(a);
-        const hoursB = getBlockTeacherHours(b);
-        if (Math.abs(hoursB - hoursA) > 0.1) {
-          return hoursB - hoursA;
-        }
-        return noise;
+      const unavailDaysA = classA?.unavailability ? Object.values(classA.unavailability).filter(day => day && day.every(p => p === true)).length : 0;
+      const unavailDaysB = classB?.unavailability ? Object.values(classB.unavailability).filter(day => day && day.every(p => p === true)).length : 0;
+      
+      if (unavailDaysA !== unavailDaysB) {
+        return unavailDaysB - unavailDaysA;
       }
+
+      // Priority 3: Teachers with high constraints
+      const teacherIdsA = a.assignment.teacherId ? a.assignment.teacherId.split(",") : [];
+      const teacherIdsB = b.assignment.teacherId ? b.assignment.teacherId.split(",") : [];
       
-      // Tier 3: en çok kısıtı olan öğretmenden başlayarak
-      const constA = getBlockTeacherConstraints(a);
-      const constB = getBlockTeacherConstraints(b);
-      if (Math.abs(constB - constA) > 0.1) {
-        return constB - constA;
+      const teacherUnavailA = teacherIdsA.reduce((sum, id) => sum + (teacherConstraints[id] || 0), 0);
+      const teacherUnavailB = teacherIdsB.reduce((sum, id) => sum + (teacherConstraints[id] || 0), 0);
+      
+      if (teacherUnavailA !== teacherUnavailB) {
+        return teacherUnavailB - teacherUnavailA;
       }
-      
-      const hoursA = getBlockTeacherHours(a);
-      const hoursB = getBlockTeacherHours(b);
-      if (Math.abs(hoursB - hoursA) > 0.1) {
-        return hoursB - hoursA;
+
+      // Priority 4: Larger block size first
+      if (a.size !== b.size) {
+        return b.size - a.size;
       }
-      
-      return noise;
+
+      return Math.random() - 0.5;
     });
 
-    // 1. GREEDY PASS (Placement constructor)
-    for (let bIdx = 0; bIdx < blocksToProcess.length; bIdx++) {
-      const block = blocksToProcess[bIdx];
-      let placed = false;
-      const classId = block.assignment.classId;
+    // Deep Backtracking Depth Limit
+    let maxBacktrackDepth = Math.min(10, 3 + restartCount);
+    let lastYieldTime = Date.now();
 
-      // Try placing block in a suitable empty slot
-      for (let d = 0; d < numDays; d++) {
-        for (let p = 0; p <= numPeriods - block.size; p++) {
-          if (isPlacementValidEx(state, teachersMap, classesMap, classroomsMap, currentSchedule, currentTeacherOccupancy, currentClassroomOccupancy, block.assignment, d, p, block.size)) {
-            // Place it in schedule and register in occupancy grids
-            for (let offset = 0; offset < block.size; offset++) {
-              const period = p + offset;
-              const slot = {
-                assignmentId: block.assignment.id,
-                courseId: block.assignment.courseId,
-                teacherId: block.assignment.teacherId,
-                classroomId: block.assignment.classroomId
-              };
-              currentSchedule[classId][d][period] = slot;
-              registerOccupancy(classId, d, period, slot, currentTeacherOccupancy, currentClassroomOccupancy);
-            }
-            placed = true;
-            break;
-          }
-        }
-        if (placed) break;
-      }
+    const solveStateSpace = async (
+      blocks: BlockToPlace[],
+      depth: number
+    ): Promise<boolean> => {
+      if (stopped) return false;
 
-      // If greedy constructor failed, try Backtracking Swap
-      if (!placed) {
-        placed = tryBacktrackingSwap(
-          state,
-          teachersMap,
-          classesMap,
-          classroomsMap,
-          coursesMap,
-          currentSchedule,
-          currentTeacherOccupancy,
-          currentClassroomOccupancy,
-          block,
-          numDays,
-          numPeriods,
-          assignments,
-          options?.priorityAssignmentIds
-        );
-      }
+      // Yield periodically to allow stop signal and GUI updates
+      if (Date.now() - lastYieldTime > 50) {
+        await new Promise(resolve => setTimeout(resolve, 0));
+        lastYieldTime = Date.now();
 
-      if (!placed) {
-        unplacedList.push(block);
-      }
-    }
+        const currentTotalUnplaced = blocks.reduce((sum, b) => sum + b.size, 0);
+        const elapsed = Math.round((Date.now() - startTime) / 1000);
+        const totalHours = blocksToPlace.reduce((sum, b) => sum + b.size, 0);
+        const placedHours = totalHours - currentTotalUnplaced;
 
-    // 2. SIMULATED ANNEALING PASS (To optimize days off, gaps, and any remaining unplaced blocks)
-    let currentPenalty = calculateScheduleScore(currentSchedule, state, teachersMap, classesMap, classroomsMap, coursesMap);
-    let currentCost = currentPenalty + unplacedList.reduce((sum, b) => sum + b.size, 0) * 1000;
-
-    let bestTrialSchedule = cloneSchedule(currentSchedule);
-    let bestTrialUnplaced = [...unplacedList];
-    let bestTrialTeacherOccupancy = cloneOccupancy(currentTeacherOccupancy, numDays);
-    let bestTrialClassroomOccupancy = cloneOccupancy(currentClassroomOccupancy, numDays);
-    let bestTrialCost = currentCost;
-
-    let temp = 100.0;
-    const coolingRate = 0.997;
-    const maxIterations = 5000; // Increased to 5,000 since O(1) validations are incredibly fast!
-
-    for (let iter = 0; iter < maxIterations; iter++) {
-      // Periodic status report
-      if (iter % 300 === 0) {
         self.postMessage({
           type: "progress",
           progress: {
-            phase: "optimizing",
-            percent: Math.round(((trialIdx + (iter / maxIterations)) / numStarts) * 100),
-            message: `Çalıştırma ${trialIdx + 1}/${numStarts} - İyileştirme yapılıyor (SA iterasyonu ${iter}/${maxIterations})...`,
-            steps: iter,
-            currentScore: currentPenalty,
-            unplacedCount: unplacedList.length
+            phase: "backtracking",
+            percent: Math.round(Math.min(99, (placedHours / totalHours) * 100)),
+            message: `Sert kısıtlar sezgisel olarak çözülüyor... Geri izleme derinliği: ${depth}/${maxBacktrackDepth}, Yeniden başlatma: ${restartCount}`,
+            steps: totalIterations,
+            unplacedCount: currentTotalUnplaced,
+            elapsedSeconds: elapsed,
+            totalHours,
+            placedHours,
+            unplacedHours: currentTotalUnplaced,
+            bestSchedule: bestGlobalSchedule,
+            unplacedDetails: blocks.map(b => `${classesMap.get(b.assignment.classId)?.name || b.assignment.classId} sınıfının ${b.size} saatlik dersi yerleştirilemedi.`)
           }
         });
       }
 
-      const moveType = Math.random();
-      
-      if (moveType < 0.60 && classes.length > 0) {
-        // Swap slots mutation (Intra-class)
+      if (blocks.length === 0) {
+        return true;
+      }
+
+      const block = blocks[0];
+      const classId = block.assignment.classId;
+      const classObj = classesMap.get(classId);
+      if (!classObj) {
+        return await solveStateSpace(blocks.slice(1), depth);
+      }
+
+      const candidates: { d: number; p: number; conflicts: { slot: ScheduleSlot; d: number; p: number }[] }[] = [];
+
+      for (let d = 0; d < numDays; d++) {
+        if (classObj.unavailability[d]?.every(p => p === true)) continue;
+
+        for (let p = 0; p <= numPeriods - block.size; p++) {
+          let canPlace = true;
+          const conflicts: { slot: ScheduleSlot; d: number; p: number }[] = [];
+
+          for (let offset = 0; offset < block.size; offset++) {
+            const period = p + offset;
+
+            if (classObj.unavailability[d]?.[period] === true) {
+              canPlace = false;
+              break;
+            }
+
+            if (classObj.dailyPeriods) {
+              const maxPeriods = classObj.dailyPeriods[d];
+              if (maxPeriods !== undefined && period >= maxPeriods) {
+                canPlace = false;
+                break;
+              }
+            }
+
+            if (settings.groupLessonsMode === 'different_days_strict') {
+              const classDaySched = currentSchedule[classId]?.[d];
+              if (classDaySched) {
+                const hasOtherSameCourse = classDaySched.some((s, sIdx) => 
+                  s !== null && 
+                  s.courseId === block.assignment.courseId && 
+                  s.assignmentId !== block.assignment.id &&
+                  (sIdx < p || sIdx >= p + block.size)
+                );
+                if (hasOtherSameCourse) {
+                  canPlace = false;
+                  break;
+                }
+              }
+            }
+
+            const existingSlot = currentSchedule[classId]?.[d]?.[period];
+            if (existingSlot) {
+              if (isSlotLocked(existingSlot, coursesMap) || (options?.priorityAssignmentIds && options.priorityAssignmentIds.includes(existingSlot.assignmentId))) {
+                canPlace = false;
+                break;
+              }
+              conflicts.push({ slot: existingSlot, d, p: period });
+            }
+
+            if (block.assignment.teacherId) {
+              const tIds = block.assignment.teacherId.split(",");
+              for (const tId of tIds) {
+                const teacher = teachersMap.get(tId);
+                if (teacher?.unavailability[d]?.[period] === true) {
+                  canPlace = false;
+                  break;
+                }
+
+                const occupiedByClassId = currentTeacherOccupancy[tId]?.[d]?.[period];
+                if (occupiedByClassId && occupiedByClassId !== classId) {
+                  const occupiedSlot = currentSchedule[occupiedByClassId]?.[d]?.[period];
+                  if (occupiedSlot) {
+                    if (isSlotLocked(occupiedSlot, coursesMap) || (options?.priorityAssignmentIds && options.priorityAssignmentIds.includes(occupiedSlot.assignmentId))) {
+                      canPlace = false;
+                      break;
+                    }
+                    if (!conflicts.some(c => c.slot.assignmentId === occupiedSlot.assignmentId)) {
+                      conflicts.push({ slot: occupiedSlot, d, p: period });
+                    }
+                  }
+                }
+              }
+              if (!canPlace) break;
+            }
+
+            if (block.assignment.classroomId) {
+              const classroom = classroomsMap.get(block.assignment.classroomId);
+              if (classroom?.unavailability[d]?.[period] === true) {
+                canPlace = false;
+                break;
+              }
+
+              const occupiedByClassId = currentClassroomOccupancy[block.assignment.classroomId]?.[d]?.[period];
+              if (occupiedByClassId && occupiedByClassId !== classId) {
+                const occupiedSlot = currentSchedule[occupiedByClassId]?.[d]?.[period];
+                if (occupiedSlot) {
+                  if (isSlotLocked(occupiedSlot, coursesMap) || (options?.priorityAssignmentIds && options.priorityAssignmentIds.includes(occupiedSlot.assignmentId))) {
+                    canPlace = false;
+                    break;
+                  }
+                  if (!conflicts.some(c => c.slot.assignmentId === occupiedSlot.assignmentId)) {
+                    conflicts.push({ slot: occupiedSlot, d, p: period });
+                  }
+                }
+              }
+              if (!canPlace) break;
+            }
+          }
+
+          if (canPlace) {
+            candidates.push({ d, p, conflicts });
+          }
+        }
+      }
+
+      candidates.sort((a, b) => a.conflicts.length - b.conflicts.length);
+
+      for (const cand of candidates) {
+        const { d, p, conflicts } = cand;
+
+        if (conflicts.length > 0 && depth >= maxBacktrackDepth) {
+          continue;
+        }
+
+        const backupEjected: { slot: ScheduleSlot; classId: string; d: number; p: number }[] = [];
+        for (const c of conflicts) {
+          let conflictClassId = "";
+          for (const cid of Object.keys(currentSchedule)) {
+            if (currentSchedule[cid]?.[c.d]?.[c.p]?.assignmentId === c.slot.assignmentId) {
+              conflictClassId = cid;
+              break;
+            }
+          }
+
+          if (conflictClassId) {
+            const slotToEject = currentSchedule[conflictClassId][c.d][c.p];
+            if (slotToEject) {
+              backupEjected.push({ slot: slotToEject, classId: conflictClassId, d: c.d, p: c.p });
+              currentSchedule[conflictClassId][c.d][c.p] = null;
+              clearOccupancy(conflictClassId, c.d, c.p, slotToEject, currentTeacherOccupancy, currentClassroomOccupancy);
+            }
+          }
+        }
+
+        const placedSlots: { d: number; p: number }[] = [];
+        for (let offset = 0; offset < block.size; offset++) {
+          const period = p + offset;
+          const slot = {
+            assignmentId: block.assignment.id,
+            courseId: block.assignment.courseId,
+            teacherId: block.assignment.teacherId,
+            classroomId: block.assignment.classroomId
+          };
+          currentSchedule[classId][d][period] = slot;
+          registerOccupancy(classId, d, period, slot, currentTeacherOccupancy, currentClassroomOccupancy);
+          placedSlots.push({ d, p: period });
+        }
+
+        const ejectedBlocksToPlace: BlockToPlace[] = [];
+        const processedAssignIds = new Set<string>();
+
+        for (const backup of backupEjected) {
+          if (!processedAssignIds.has(backup.slot.assignmentId)) {
+            processedAssignIds.add(backup.slot.assignmentId);
+            const assignObj = assignments.find((a: any) => a.id === backup.slot.assignmentId);
+            if (assignObj) {
+              ejectedBlocksToPlace.push({
+                assignment: assignObj,
+                size: 1,
+                id: `${assignObj.id}-ej-${Date.now()}-${Math.random()}`
+              });
+            }
+          }
+        }
+
+        const success = await solveStateSpace([...ejectedBlocksToPlace, ...blocks.slice(1)], depth + (conflicts.length > 0 ? 1 : 0));
+        if (success) {
+          return true;
+        }
+
+        // Backtrack
+        for (const ps of placedSlots) {
+          const slotToRemove = currentSchedule[classId][ps.d][ps.p];
+          currentSchedule[classId][ps.d][ps.p] = null;
+          if (slotToRemove) {
+            clearOccupancy(classId, ps.d, ps.p, slotToRemove, currentTeacherOccupancy, currentClassroomOccupancy);
+          }
+        }
+
+        for (const backup of backupEjected) {
+          currentSchedule[backup.classId][backup.d][backup.p] = backup.slot;
+          registerOccupancy(backup.classId, backup.d, backup.p, backup.slot, currentTeacherOccupancy, currentClassroomOccupancy);
+        }
+      }
+
+      return false;
+    };
+
+    const backtrackingSolved = await solveStateSpace(randomizedBlocks, 0);
+
+    // Compute unplaced details
+    const scheduledHoursInThisTrial: Record<string, number> = {};
+    for (const cId of Object.keys(currentSchedule)) {
+      for (let d = 0; d < numDays; d++) {
+        for (let p = 0; p < numPeriods; p++) {
+          const slot = currentSchedule[cId][d][p];
+          if (slot) {
+            scheduledHoursInThisTrial[slot.assignmentId] = (scheduledHoursInThisTrial[slot.assignmentId] || 0) + 1;
+          }
+        }
+      }
+    }
+
+    const finalUnplacedHoursList: BlockToPlace[] = [];
+    targetAssignments.forEach(assign => {
+      const scheduled = scheduledHoursInThisTrial[assign.id] || 0;
+      const remaining = assign.weeklyHours - scheduled;
+      if (remaining > 0) {
+        finalUnplacedHoursList.push({
+          assignment: assign,
+          size: remaining,
+          id: `${assign.id}-unplaced-final`
+        });
+      }
+    });
+
+    const unplacedHoursThisTrial = finalUnplacedHoursList.reduce((sum, b) => sum + b.size, 0);
+    const softPenaltyThisTrial = calculateScheduleScore(currentSchedule, state, teachersMap, classesMap, classroomsMap, coursesMap);
+
+    // Evaluate trial success
+    if (unplacedHoursThisTrial < bestGlobalUnplacedHours || (unplacedHoursThisTrial === bestGlobalUnplacedHours && softPenaltyThisTrial < bestGlobalPenalty)) {
+      bestGlobalSchedule = cloneSchedule(currentSchedule);
+      bestGlobalUnplaced = finalUnplacedHoursList;
+      bestGlobalUnplacedHours = unplacedHoursThisTrial;
+      bestGlobalPenalty = softPenaltyThisTrial;
+
+      const elapsed = Math.round((Date.now() - startTime) / 1000);
+      const totalHours = blocksToPlace.reduce((sum, b) => sum + b.size, 0);
+      const placedHours = totalHours - unplacedHoursThisTrial;
+
+      self.postMessage({
+        type: "progress",
+        progress: {
+          phase: "backtracking",
+          percent: Math.round(Math.min(100, (placedHours / totalHours) * 100)),
+          message: unplacedHoursThisTrial === 0 
+            ? "Mükemmel yerleşim başarıyla tamamlandı! İyileştiriliyor..." 
+            : `Daha yüksek başarımlı yerleşim çıktı! Kalan yerleşmeyen saat: ${unplacedHoursThisTrial}`,
+          steps: totalIterations,
+          unplacedCount: unplacedHoursThisTrial,
+          elapsedSeconds: elapsed,
+          totalHours,
+          placedHours,
+          unplacedHours: unplacedHoursThisTrial,
+          bestSchedule: bestGlobalSchedule,
+          unplacedDetails: finalUnplacedHoursList.map(b => `${classesMap.get(b.assignment.classId)?.name || b.assignment.classId} sınıfının ${b.size} saatlik dersi yerleştirilemedi.`)
+        }
+      });
+    }
+
+    // 4. Simulated Annealing Optimization Pass
+    if (unplacedHoursThisTrial === 0) {
+      let temp = 100.0;
+      const coolingRate = 0.998;
+      const maxSAIterations = 2000;
+
+      for (let iter = 0; iter < maxSAIterations && !stopped; iter++) {
+        if (iter % 150 === 0) {
+          await new Promise(resolve => setTimeout(resolve, 0));
+          const elapsed = Math.round((Date.now() - startTime) / 1000);
+          const totalHours = blocksToPlace.reduce((sum, b) => sum + b.size, 0);
+
+          self.postMessage({
+            type: "progress",
+            progress: {
+              phase: "optimizing",
+              percent: 100,
+              message: `Program Simulated Annealing ile optimize ediliyor... (SA adımı ${iter}/${maxSAIterations})`,
+              steps: totalIterations * 1000 + iter,
+              unplacedCount: 0,
+              elapsedSeconds: elapsed,
+              totalHours,
+              placedHours: totalHours,
+              unplacedHours: 0,
+              bestSchedule: bestGlobalSchedule,
+              unplacedDetails: []
+            }
+          });
+        }
+
         const randClass = classes[Math.floor(Math.random() * classes.length)];
         const d1 = Math.floor(Math.random() * numDays);
         const p1 = Math.floor(Math.random() * numPeriods);
@@ -1003,28 +1232,16 @@ self.onmessage = async (e: MessageEvent) => {
           const slot1 = currentSchedule[randClass.id]?.[d1]?.[p1] || null;
           const slot2 = currentSchedule[randClass.id]?.[d2]?.[p2] || null;
 
-          const isLocked1 = slot1 && (slot1.isLocked === true || (() => {
-            const course = coursesMap.get(slot1.courseId);
-            if (!course) return false;
-            return (course.name || "").toLowerCase().includes("şef") || (course.name || "").toLowerCase().includes("koor");
-          })() || !!(options?.priorityAssignmentIds && options.priorityAssignmentIds.includes(slot1.assignmentId)));
-
-          const isLocked2 = slot2 && (slot2.isLocked === true || (() => {
-            const course = coursesMap.get(slot2.courseId);
-            if (!course) return false;
-            return (course.name || "").toLowerCase().includes("şef") || (course.name || "").toLowerCase().includes("koor");
-          })() || !!(options?.priorityAssignmentIds && options.priorityAssignmentIds.includes(slot2.assignmentId)));
+          const isLocked1 = slot1 && isSlotLocked(slot1, coursesMap);
+          const isLocked2 = slot2 && isSlotLocked(slot2, coursesMap);
 
           if (!isLocked1 && !isLocked2) {
-            // Unregister old occupancies
             if (slot1) clearOccupancy(randClass.id, d1, p1, slot1, currentTeacherOccupancy, currentClassroomOccupancy);
             if (slot2) clearOccupancy(randClass.id, d2, p2, slot2, currentTeacherOccupancy, currentClassroomOccupancy);
 
-            // Apply Mutation In-Place
-            if (currentSchedule[randClass.id]?.[d1]) currentSchedule[randClass.id][d1][p1] = slot2;
-            if (currentSchedule[randClass.id]?.[d2]) currentSchedule[randClass.id][d2][p2] = slot1;
+            currentSchedule[randClass.id][d1][p1] = slot2;
+            currentSchedule[randClass.id][d2][p2] = slot1;
 
-            // Check if hard constraints are respected
             let valid1 = true;
             if (slot1) {
               const assign1 = assignments.find(a => a.id === slot1.assignmentId);
@@ -1042,192 +1259,65 @@ self.onmessage = async (e: MessageEvent) => {
             }
 
             if (valid1 && valid2) {
-              // Register new occupancies
               if (slot1) registerOccupancy(randClass.id, d2, p2, slot1, currentTeacherOccupancy, currentClassroomOccupancy);
               if (slot2) registerOccupancy(randClass.id, d1, p1, slot2, currentTeacherOccupancy, currentClassroomOccupancy);
 
-              // Valid move! Evaluate soft score delta
               const newPenalty = calculateScheduleScore(currentSchedule, state, teachersMap, classesMap, classroomsMap, coursesMap);
-              const newCost = newPenalty + unplacedList.reduce((sum, b) => sum + b.size, 0) * 1000;
-              const delta = newCost - currentCost;
+              const delta = newPenalty - softPenaltyThisTrial;
 
               if (delta <= 0 || Math.random() < Math.exp(-delta / temp)) {
-                // Accept Mutation
-                currentPenalty = newPenalty;
-                currentCost = newCost;
-
-                if (currentCost < bestTrialCost) {
-                  bestTrialSchedule = cloneSchedule(currentSchedule);
-                  bestTrialUnplaced = [...unplacedList];
-                  bestTrialTeacherOccupancy = cloneOccupancy(currentTeacherOccupancy, numDays);
-                  bestTrialClassroomOccupancy = cloneOccupancy(currentClassroomOccupancy, numDays);
-                  bestTrialCost = currentCost;
+                bestGlobalPenalty = newPenalty;
+                if (newPenalty < bestGlobalPenalty) {
+                  bestGlobalSchedule = cloneSchedule(currentSchedule);
                 }
               } else {
-                // Reject Mutation (Undo / Rollback In-Place)
-                // Unregister swapped occupancies
                 if (slot1) clearOccupancy(randClass.id, d2, p2, slot1, currentTeacherOccupancy, currentClassroomOccupancy);
                 if (slot2) clearOccupancy(randClass.id, d1, p1, slot2, currentTeacherOccupancy, currentClassroomOccupancy);
 
-                // Revert schedule swap
-                if (currentSchedule[randClass.id]?.[d1]) currentSchedule[randClass.id][d1][p1] = slot1;
-                if (currentSchedule[randClass.id]?.[d2]) currentSchedule[randClass.id][d2][p2] = slot2;
+                currentSchedule[randClass.id][d1][p1] = slot1;
+                currentSchedule[randClass.id][d2][p2] = slot2;
 
-                // Restore old occupancies
                 if (slot1) registerOccupancy(randClass.id, d1, p1, slot1, currentTeacherOccupancy, currentClassroomOccupancy);
                 if (slot2) registerOccupancy(randClass.id, d2, p2, slot2, currentTeacherOccupancy, currentClassroomOccupancy);
               }
             } else {
-              // Invalid move (violates hard constraints) - Rollback In-Place
-              if (currentSchedule[randClass.id]?.[d1]) currentSchedule[randClass.id][d1][p1] = slot1;
-              if (currentSchedule[randClass.id]?.[d2]) currentSchedule[randClass.id][d2][p2] = slot2;
+              currentSchedule[randClass.id][d1][p1] = slot1;
+              currentSchedule[randClass.id][d2][p2] = slot2;
 
               if (slot1) registerOccupancy(randClass.id, d1, p1, slot1, currentTeacherOccupancy, currentClassroomOccupancy);
               if (slot2) registerOccupancy(randClass.id, d2, p2, slot2, currentTeacherOccupancy, currentClassroomOccupancy);
             }
           }
         }
-      } else if (unplacedList.length > 0) {
-        // Try placing an unplaced block mutation
-        const prevTotalSize = unplacedList.reduce((sum, b) => sum + b.size, 0);
-        const randUnplacedIdx = Math.floor(Math.random() * unplacedList.length);
-        const block = unplacedList[randUnplacedIdx];
-        const classId = block.assignment.classId;
-        const d = Math.floor(Math.random() * numDays);
-        const p = Math.floor(Math.random() * (numPeriods - block.size + 1));
 
-        // Ensure target slot isn't locked
-        let hasLockedCell = false;
-        const classObj = classesMap.get(classId);
-        for (let offset = 0; offset < block.size; offset++) {
-          const currentSlot = currentSchedule[classId]?.[d]?.[p + offset];
-          const isCurrentSlotLocked = currentSlot && (currentSlot.isLocked === true || !!(options?.priorityAssignmentIds && options.priorityAssignmentIds.includes(currentSlot.assignmentId)));
-          if (classObj?.unavailability[d]?.[p + offset] === true || isCurrentSlotLocked) {
-            hasLockedCell = true;
-            break;
-          }
-        }
-
-        if (!hasLockedCell) {
-          // Store old slots and unregister occupancies
-          const oldSlots: (ScheduleSlot | null)[] = [];
-          for (let offset = 0; offset < block.size; offset++) {
-            const os = currentSchedule[classId][d][p + offset];
-            oldSlots.push(os);
-            if (os) {
-              clearOccupancy(classId, d, p + offset, os, currentTeacherOccupancy, currentClassroomOccupancy);
-            }
-            currentSchedule[classId][d][p + offset] = null;
-          }
-
-          if (isPlacementValidEx(state, teachersMap, classesMap, classroomsMap, currentSchedule, currentTeacherOccupancy, currentClassroomOccupancy, block.assignment, d, p, block.size, classId)) {
-            // Apply placement
-            const newPlacedSlots: ScheduleSlot[] = [];
-            for (let offset = 0; offset < block.size; offset++) {
-              const newSlot = {
-                assignmentId: block.assignment.id,
-                courseId: block.assignment.courseId,
-                teacherId: block.assignment.teacherId,
-                classroomId: block.assignment.classroomId
-              };
-              currentSchedule[classId][d][p + offset] = newSlot;
-              registerOccupancy(classId, d, p + offset, newSlot, currentTeacherOccupancy, currentClassroomOccupancy);
-              newPlacedSlots.push(newSlot);
-            }
-
-            // Remove from unplaced and add any ejected lessons to unplaced list
-            unplacedList.splice(randUnplacedIdx, 1);
-            const ejectedList: BlockToPlace[] = [];
-            oldSlots.forEach(slot => {
-              if (slot) {
-                const assignObj = assignments.find(a => a.id === slot.assignmentId);
-                if (assignObj) {
-                  ejectedList.push({
-                    assignment: assignObj,
-                    size: 1,
-                    id: `${assignObj.id}-ej-${Date.now()}-${Math.random()}`
-                  });
-                }
-              }
-            });
-            unplacedList.push(...ejectedList);
-
-            const nextTotalSize = unplacedList.reduce((sum, b) => sum + b.size, 0);
-            const doesNotIncreaseUnplaced = nextTotalSize <= prevTotalSize;
-
-            const newPenalty = calculateScheduleScore(currentSchedule, state, teachersMap, classesMap, classroomsMap, coursesMap);
-            const newCost = newPenalty + nextTotalSize * 1000;
-            const delta = newCost - currentCost;
-
-            if (doesNotIncreaseUnplaced && (delta <= 0 || Math.random() < Math.exp(-delta / temp))) {
-              // Accept placement mutation
-              currentPenalty = newPenalty;
-              currentCost = newCost;
-
-              if (currentCost < bestTrialCost) {
-                bestTrialSchedule = cloneSchedule(currentSchedule);
-                bestTrialUnplaced = [...unplacedList];
-                bestTrialTeacherOccupancy = cloneOccupancy(currentTeacherOccupancy, numDays);
-                bestTrialClassroomOccupancy = cloneOccupancy(currentClassroomOccupancy, numDays);
-                bestTrialCost = currentCost;
-              }
-            } else {
-              // Reject (Undo placement mutation)
-              // Unregister new placed slots
-              for (let offset = 0; offset < block.size; offset++) {
-                clearOccupancy(classId, d, p + offset, newPlacedSlots[offset], currentTeacherOccupancy, currentClassroomOccupancy);
-              }
-              // Restore old slots and register occupancies
-              for (let offset = 0; offset < block.size; offset++) {
-                currentSchedule[classId][d][p + offset] = oldSlots[offset];
-                const os = oldSlots[offset];
-                if (os) {
-                  registerOccupancy(classId, d, p + offset, os, currentTeacherOccupancy, currentClassroomOccupancy);
-                }
-              }
-              // Restore unplaced list
-              ejectedList.forEach(() => unplacedList.pop());
-              unplacedList.splice(randUnplacedIdx, 0, block);
-            }
-          } else {
-            // Invalid - Rollback immediately
-            for (let offset = 0; offset < block.size; offset++) {
-              currentSchedule[classId][d][p + offset] = oldSlots[offset];
-              const os = oldSlots[offset];
-              if (os) {
-                registerOccupancy(classId, d, p + offset, os, currentTeacherOccupancy, currentClassroomOccupancy);
-              }
-            }
-          }
-        }
+        temp *= coolingRate;
       }
-
-      temp *= coolingRate;
     }
 
-    // Evaluate this trial's best solution compared to other trials
-    const trialUnplacedHours = bestTrialUnplaced.reduce((sum, b) => sum + b.size, 0);
-    const bestGlobalUnplacedHours = bestGlobalUnplaced.reduce((sum, b) => sum + b.size, 0);
+    // Randomized Restart trigger logic (60 seconds)
+    if (Date.now() - lastRestartTime > 60000) {
+      restartCount++;
+      lastRestartTime = Date.now();
+    }
 
-    // Primary goal: Minimize unplaced hours. Secondary: Minimize soft penalty gaps.
-    if (trialUnplacedHours < bestGlobalUnplacedHours || (trialUnplacedHours === bestGlobalUnplacedHours && bestTrialCost < bestGlobalPenalty)) {
-      bestGlobalSchedule = bestTrialSchedule;
-      bestGlobalUnplaced = bestTrialUnplaced;
-      bestGlobalPenalty = bestTrialCost;
+    // If options specify we only run 1 standard trial and backtracking solved it, let's allow it to complete
+    if (bestGlobalUnplacedHours === 0 && !options?.exhaustiveMode && restartCount > 0) {
+      break;
     }
   }
 
-  const finalUnplacedHours = bestGlobalUnplaced.reduce((sum, b) => sum + b.size, 0);
+  // Final worker return
   self.postMessage({
     type: "result",
     result: {
-      success: finalUnplacedHours === 0,
+      success: bestGlobalUnplacedHours === 0,
       schedule: bestGlobalSchedule,
-      unplacedCount: bestGlobalUnplaced.length,
-      message: finalUnplacedHours === 0
+      unplacedCount: bestGlobalUnplacedHours,
+      message: bestGlobalUnplacedHours === 0
         ? "Tüm haftalık ders programı başarıyla yerleştirildi ve optimize edildi!"
-        : `Ders programı yerleştirildi ancak ${finalUnplacedHours} ders saati yerleştirilemedi. Lütfen kısıtları gevşetmeyi deneyin.`,
+        : `Ders programı yerleştirildi ancak ${bestGlobalUnplacedHours} ders saati yerleştirilemedi.`,
       unplacedDetails: bestGlobalUnplaced.map(b => `${classesMap.get(b.assignment.classId)?.name || b.assignment.classId} sınıfının ${b.size} saatlik dersi yerleştirilemedi.`)
     }
   });
 };
+
