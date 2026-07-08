@@ -3080,6 +3080,16 @@ const handleSetCustomDistribution = (assignmentId: string, distribution: string)
                                       <div 
                                         key={a.id} 
                                         onClick={() => setSelectedAssignmentId(a.id)}
+                                        onContextMenu={(e) => {
+                                          e.preventDefault();
+                                          setSelectedAssignmentId(a.id);
+                                          setAssignmentContextMenu({
+                                            visible: true,
+                                            x: e.clientX,
+                                            y: e.clientY,
+                                            assignmentId: a.id
+                                          });
+                                        }}
                                         draggable={true}
                                         onDragStart={(e) => {
                                           e.dataTransfer.setData("text/plain", JSON.stringify({ assignmentId: a.id }));
@@ -3108,49 +3118,6 @@ const handleSetCustomDistribution = (assignmentId: string, distribution: string)
                                             </span>
                                           </div>
                                         </div>
-
-                                        {isSelected && (
-                                          <div 
-                                            className="mt-2.5 pt-2 border-t border-blue-100 flex flex-wrap gap-1.5"
-                                            onClick={(e) => e.stopPropagation()}
-                                          >
-                                            <button
-                                              onClick={() => {
-                                                setDistributionDialog({
-                                                  assignmentId: a.id,
-                                                  current: a.customPlacementMode || ""
-                                                });
-                                                setDistributionInput(a.customPlacementMode || "");
-                                              }}
-                                              className="px-2 py-1 bg-blue-600 hover:bg-blue-700 text-white font-extrabold rounded-md text-[10px] flex items-center gap-1 transition-all shadow-sm cursor-pointer"
-                                            >
-                                              <Edit3 className="w-3 h-3 text-white" />
-                                              <span>Özel Dağıtım Belirle</span>
-                                            </button>
-
-                                            <button
-                                              onClick={() => {
-                                                setScheduleViewMode("class");
-                                                setViewingEntityId(a.classId);
-                                                showToast(`${classesMap.get(a.classId)?.name || "Sınıf"} programına geçildi.`, "success");
-                                              }}
-                                              className="px-2 py-1 bg-indigo-600 hover:bg-indigo-700 text-white font-extrabold rounded-md text-[10px] flex items-center gap-1 transition-all shadow-sm cursor-pointer"
-                                            >
-                                              <School className="w-3 h-3 text-white" />
-                                              <span>Sınıfa Bağlan</span>
-                                            </button>
-
-                                            <button
-                                              onClick={() => {
-                                                handleForceLesson(a.id);
-                                              }}
-                                              className="px-2 py-1 bg-amber-600 hover:bg-amber-700 text-white font-extrabold rounded-md text-[10px] flex items-center gap-1 transition-all shadow-sm cursor-pointer"
-                                            >
-                                              <Flame className="w-3 h-3 text-white fill-amber-100/35" />
-                                              <span>Bu Dersi Zorla</span>
-                                            </button>
-                                          </div>
-                                        )}
                                       </div>
                                     );
                                   })
@@ -3193,6 +3160,16 @@ const handleSetCustomDistribution = (assignmentId: string, distribution: string)
                                       <div 
                                         key={a.id} 
                                         onClick={() => setSelectedAssignmentId(a.id)}
+                                        onContextMenu={(e) => {
+                                          e.preventDefault();
+                                          setSelectedAssignmentId(a.id);
+                                          setAssignmentContextMenu({
+                                            visible: true,
+                                            x: e.clientX,
+                                            y: e.clientY,
+                                            assignmentId: a.id
+                                          });
+                                        }}
                                         draggable={true}
                                         onDragStart={(e) => {
                                           e.dataTransfer.setData("text/plain", JSON.stringify({ assignmentId: a.id }));
@@ -3221,52 +3198,6 @@ const handleSetCustomDistribution = (assignmentId: string, distribution: string)
                                             </span>
                                           </div>
                                         </div>
-
-                                        {isSelected && (
-                                          <div 
-                                            className="mt-2.5 pt-2 border-t border-blue-100 flex flex-wrap gap-1.5"
-                                            onClick={(e) => e.stopPropagation()}
-                                          >
-                                            <button
-                                              onClick={() => {
-                                                setDistributionDialog({
-                                                  assignmentId: a.id,
-                                                  current: a.customPlacementMode || ""
-                                                });
-                                                setDistributionInput(a.customPlacementMode || "");
-                                              }}
-                                              className="px-2 py-1 bg-blue-600 hover:bg-blue-700 text-white font-extrabold rounded-md text-[10px] flex items-center gap-1 transition-all shadow-sm cursor-pointer"
-                                            >
-                                              <Edit3 className="w-3 h-3 text-white" />
-                                              <span>Özel Dağıtım Belirle</span>
-                                            </button>
-
-                                            {a.teacherId && (
-                                              <button
-                                                onClick={() => {
-                                                  const firstTId = a.teacherId!.split(",")[0].trim();
-                                                  setScheduleViewMode("teacher");
-                                                  setViewingEntityId(firstTId);
-                                                  showToast(`${teachersMap.get(firstTId)?.name || "Öğretmen"} programına geçildi.`, "success");
-                                                }}
-                                                className="px-2 py-1 bg-teal-600 hover:bg-teal-700 text-white font-extrabold rounded-md text-[10px] flex items-center gap-1 transition-all shadow-sm cursor-pointer"
-                                              >
-                                                <User className="w-3 h-3 text-white" />
-                                                <span>Öğretmene Bağlan</span>
-                                              </button>
-                                            )}
-
-                                            <button
-                                              onClick={() => {
-                                                handleForceLesson(a.id);
-                                              }}
-                                              className="px-2 py-1 bg-amber-600 hover:bg-amber-700 text-white font-extrabold rounded-md text-[10px] flex items-center gap-1 transition-all shadow-sm cursor-pointer"
-                                            >
-                                              <Flame className="w-3 h-3 text-white fill-amber-100/35" />
-                                              <span>Bu Dersi Zorla</span>
-                                            </button>
-                                          </div>
-                                        )}
                                       </div>
                                     );
                                   })
@@ -3339,6 +3270,16 @@ const handleSetCustomDistribution = (assignmentId: string, distribution: string)
                                         <div 
                                           key={a.id} 
                                           onClick={() => setSelectedAssignmentId(a.id)}
+                                          onContextMenu={(e) => {
+                                            e.preventDefault();
+                                            setSelectedAssignmentId(a.id);
+                                            setAssignmentContextMenu({
+                                              visible: true,
+                                              x: e.clientX,
+                                              y: e.clientY,
+                                              assignmentId: a.id
+                                            });
+                                          }}
                                           draggable={true}
                                           onDragStart={(e) => {
                                             e.dataTransfer.setData("text/plain", JSON.stringify({ assignmentId: a.id }));
@@ -3369,49 +3310,6 @@ const handleSetCustomDistribution = (assignmentId: string, distribution: string)
                                               </span>
                                             </div>
                                           </div>
-
-                                          {isSelected && (
-                                            <div 
-                                              className="mt-2 pt-2 border-t border-amber-200/50 flex flex-wrap gap-1"
-                                              onClick={(e) => e.stopPropagation()}
-                                            >
-                                              <button
-                                                onClick={() => {
-                                                  setDistributionDialog({
-                                                    assignmentId: a.id,
-                                                    current: a.customPlacementMode || ""
-                                                  });
-                                                  setDistributionInput(a.customPlacementMode || "");
-                                                }}
-                                                className="px-2 py-1 bg-amber-600 hover:bg-amber-700 text-white font-extrabold rounded-md text-[9px] flex items-center gap-1 transition-all shadow-sm cursor-pointer animate-fade-in"
-                                              >
-                                                <Edit3 className="w-2.5 h-2.5 text-white" />
-                                                <span>Dağıtım Belirle</span>
-                                              </button>
-
-                                              <button
-                                                onClick={() => {
-                                                  setScheduleViewMode("class");
-                                                  setViewingEntityId(a.classId);
-                                                  showToast(`${classesMap.get(a.classId)?.name || "Sınıf"} programına geçildi.`, "success");
-                                                }}
-                                                className="px-2 py-1 bg-indigo-600 hover:bg-indigo-700 text-white font-extrabold rounded-md text-[9px] flex items-center gap-1 transition-all shadow-sm cursor-pointer"
-                                              >
-                                                <School className="w-2.5 h-2.5 text-white" />
-                                                <span>Sınıfa Bağlan</span>
-                                              </button>
-
-                                              <button
-                                                onClick={() => {
-                                                  handleForceLesson(a.id);
-                                                }}
-                                                className="px-2 py-1 bg-rose-600 hover:bg-rose-700 text-white font-extrabold rounded-md text-[9px] flex items-center gap-1 transition-all shadow-sm cursor-pointer"
-                                              >
-                                                <Flame className="w-2.5 h-2.5 text-white fill-rose-100/35" />
-                                                <span>Zorla</span>
-                                              </button>
-                                            </div>
-                                          )}
                                         </div>
                                       );
                                     })
@@ -4518,6 +4416,93 @@ const handleSetCustomDistribution = (assignmentId: string, distribution: string)
               </motion.div>
             </div>
           )}
+
+          {/* Assignment right-click context menu */}
+          {assignmentContextMenu && assignmentContextMenu.visible && (() => {
+            const assign = state.assignments.find(a => a.id === assignmentContextMenu.assignmentId);
+            if (!assign) return null;
+            const course = coursesMap.get(assign.courseId);
+            const classObj = classesMap.get(assign.classId);
+
+            return (
+              <div
+                style={{ top: assignmentContextMenu.y, left: assignmentContextMenu.x }}
+                className="fixed z-[999] min-w-[260px] bg-white border border-slate-200 rounded-xl shadow-2xl p-1.5 flex flex-col gap-0.5 divide-y divide-slate-100 font-sans"
+                onClick={(e) => e.stopPropagation()}
+              >
+                <div className="px-2.5 py-1 text-[10px] font-black text-slate-400 uppercase tracking-widest truncate">
+                  📚 {course?.name || "Ders"} İşlemleri
+                </div>
+                <div className="py-1 space-y-0.5 text-left">
+                  <button
+                    onClick={() => {
+                      setDistributionDialog({
+                        assignmentId: assign.id,
+                        current: assign.customPlacementMode || ""
+                      });
+                      setDistributionInput(assign.customPlacementMode || "");
+                      setAssignmentContextMenu(null);
+                    }}
+                    className="w-full text-left px-2.5 py-1.5 hover:bg-blue-50 hover:text-blue-700 text-blue-600 rounded-lg text-xs font-bold flex items-center gap-2 transition cursor-pointer border-none bg-transparent"
+                  >
+                    <Edit3 className="w-3.5 h-3.5 text-blue-500" />
+                    <span>Bu Derse Özel Dağıtım Belirle</span>
+                  </button>
+
+                  {assign.teacherId && (
+                    <button
+                      onClick={() => {
+                        const firstTId = assign.teacherId!.split(",")[0].trim();
+                        setScheduleViewMode("teacher");
+                        setViewingEntityId(firstTId);
+                        showToast(`${teachersMap.get(firstTId)?.name || "Öğretmen"} programına geçildi.`, "success");
+                        setAssignmentContextMenu(null);
+                      }}
+                      className="w-full text-left px-2.5 py-1.5 hover:bg-teal-50 hover:text-teal-700 text-teal-600 rounded-lg text-xs font-bold flex items-center gap-2 transition cursor-pointer border-none bg-transparent"
+                    >
+                      <User className="w-3.5 h-3.5 text-teal-500" />
+                      <span>Öğretmene Bağlan</span>
+                    </button>
+                  )}
+
+                  {assign.classId && (
+                    <button
+                      onClick={() => {
+                        setScheduleViewMode("class");
+                        setViewingEntityId(assign.classId);
+                        showToast(`${classesMap.get(assign.classId)?.name || "Sınıf"} programına geçildi.`, "success");
+                        setAssignmentContextMenu(null);
+                      }}
+                      className="w-full text-left px-2.5 py-1.5 hover:bg-indigo-50 hover:text-indigo-700 text-indigo-600 rounded-lg text-xs font-bold flex items-center gap-2 transition cursor-pointer border-none bg-transparent"
+                    >
+                      <School className="w-3.5 h-3.5 text-indigo-500" />
+                      <span>Sınıfa Bağlan</span>
+                    </button>
+                  )}
+
+                  <button
+                    onClick={() => {
+                      handleForceLesson(assign.id);
+                      setAssignmentContextMenu(null);
+                    }}
+                    className="w-full text-left px-2.5 py-1.5 hover:bg-amber-50 hover:text-amber-700 text-amber-600 rounded-lg text-xs font-bold flex items-center gap-2 transition cursor-pointer border-none bg-transparent"
+                  >
+                    <Flame className="w-3.5 h-3.5 text-amber-500 fill-amber-100/35" />
+                    <span>Bu Dersi Zorla</span>
+                  </button>
+                </div>
+
+                <div className="pt-1">
+                  <button
+                    onClick={() => setAssignmentContextMenu(null)}
+                    className="w-full text-center py-1 hover:bg-slate-100 text-slate-600 rounded-lg text-[10px] font-bold transition cursor-pointer border-none bg-transparent"
+                  >
+                    Kapat
+                  </button>
+                </div>
+              </div>
+            );
+          })()}
       </>
     );
 }
