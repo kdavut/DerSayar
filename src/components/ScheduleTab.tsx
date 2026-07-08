@@ -1625,6 +1625,13 @@ const handleSetCustomDistribution = (assignmentId: string, distribution: string)
     setSearchQuery("");
   }, [scheduleViewMode, setSearchQuery]);
 
+  // Automatically close analysis panel when there are no conflicts and no unplaced reports
+  useEffect(() => {
+    if (activeConflicts.length === 0 && unplacedReports.length === 0 && isAnalysisOpen) {
+      setIsAnalysisOpen(false);
+    }
+  }, [activeConflicts.length, unplacedReports.length, isAnalysisOpen, setIsAnalysisOpen]);
+
   // Automatically select the first assignment of the selected teacher or class
   useEffect(() => {
     if (scheduleViewMode === "teacher" && viewingEntityId) {
