@@ -904,8 +904,10 @@ export const useAppStore = create<AppStore>((set) => ({
         store.setUnplacedReports(result.unplacedReports);
       }
 
-      if (result.success) {
-        store.showToast(result.message, "success");
+      const hasUnplaced = result.unplacedReports && result.unplacedReports.length > 0;
+
+      if (result.success || !hasUnplaced) {
+        store.showToast(result.message || "Tüm dersler başarıyla yerleştirildi!", "success");
         store.setIsAnalysisOpen(false);
       } else {
         // Check if we were targeting a specific teacher (Öğretmen bazlı yerleştirme)
@@ -924,9 +926,27 @@ export const useAppStore = create<AppStore>((set) => ({
           }
         }
 
+        // Check if we were targeting specific classes (Sınıf bazlı yerleştirme)
+        const targetedClassIds = targets?.classIds;
+        const isClassTargeted = targetedClassIds && targetedClassIds.length > 0;
+        let targetedClassFullyPlaced = false;
+
+        if (isClassTargeted) {
+          const classHasUnplaced = result.unplacedReports?.some((report: any) => {
+            return targetedClassIds.includes(report.classId);
+          });
+          if (!classHasUnplaced) {
+            targetedClassFullyPlaced = true;
+          }
+        }
+
         if (targetedTeacherFullyPlaced) {
           const teacherName = preparedState.teachers.find(t => t.id === targetedTeacherIds[0])?.name || "Öğretmen";
           store.showToast(`"${teacherName}" isimli öğretmenin tüm dersleri başarıyla yerleştirildi!`, "success");
+          store.setIsAnalysisOpen(false);
+        } else if (targetedClassFullyPlaced) {
+          const className = preparedState.classes.find(c => c.id === targetedClassIds[0])?.name || "Sınıf";
+          store.showToast(`"${className}" sınıfının tüm dersleri başarıyla yerleştirildi!`, "success");
           store.setIsAnalysisOpen(false);
         } else {
           if (result.unplacedDetails && result.unplacedDetails.length > 0) {
