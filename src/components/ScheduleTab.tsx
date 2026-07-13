@@ -2130,8 +2130,8 @@ const handleSetCustomDistribution = (assignmentId: string, distribution: string)
                                   }
                                 } else if (cellIsUnavailabilityLocked) {
                                   if (isSpecialClosure) {
-                                    // özel kapatma ile kapatılmışsa turuncu olsun!
-                                    cellStyle = "bg-orange-100 text-orange-950 border border-orange-200 cursor-not-allowed select-none";
+                                    // özel kapatma ile kapatılmışsa parlak turuncu olsun! (per user request)
+                                    cellStyle = "bg-orange-500 text-white font-extrabold border border-orange-600 cursor-not-allowed select-none shadow-sm";
                                   } else {
                                     // normal kapatılmışsa tam kırmızı olsun! (per user request!)
                                     cellStyle = "bg-red-600 text-white font-extrabold border border-red-700 cursor-not-allowed select-none shadow-sm";
@@ -2381,8 +2381,8 @@ const handleSetCustomDistribution = (assignmentId: string, distribution: string)
                                           </div>
                                         ) : cellIsUnavailabilityLocked ? (
                                           <div className="flex flex-col items-center justify-center">
-                                            <Lock className={`w-2.5 h-2.5 ${isSpecialClosure ? "text-orange-700" : "text-red-100"} shrink-0 mb-0.5`} />
-                                            <span className={`text-[7.5px] font-extrabold tracking-tight uppercase truncate max-w-[65px] ${isSpecialClosure ? "text-orange-950" : "text-white"} font-black`}>{closureName || "KAPALI"}</span>
+                                            <Lock className={`w-2.5 h-2.5 ${isSpecialClosure ? "text-orange-100" : "text-red-100"} shrink-0 mb-0.5`} />
+                                            <span className="text-[7.5px] font-extrabold tracking-tight uppercase truncate max-w-[65px] text-white font-black">{closureName || "KAPALI"}</span>
                                           </div>
                                         ) : selectedAssignmentId && activeStatus.isImpossible ? (
                                           <div className="flex flex-col items-center justify-center p-0.5 text-center" title={activeStatus.reason}>
