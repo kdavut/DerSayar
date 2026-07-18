@@ -1054,8 +1054,7 @@ self.onmessage = async (e: MessageEvent) => {
                   baseSchedule[cId][d][p] = slot;
                 } else {
                   // If we are targeting specific classes/teachers, and this slot does NOT belong to any of them,
-                  // we MUST keep it in baseSchedule (as if it is locked/fixed) so it isn't deleted or ejected.
-                  let belongsToTarget = true;
+                                   let belongsToTarget = true;
                   if (isTargeted) {
                     belongsToTarget = false;
                     const assign = assignmentsMap.get(slot.assignmentId);
@@ -1071,8 +1070,7 @@ self.onmessage = async (e: MessageEvent) => {
                       }
                     }
                   }
-
-                  if (belongsToTarget) {
+                  if (belongsToTarget && !keepExisting) {
                     baseSchedule[cId][d][p] = null; // Let the scheduler shift/re-place it!
                   } else {
                     baseSchedule[cId][d][p] = slot; // Keep it fixed so it is preserved!
