@@ -38,6 +38,9 @@ export interface ProgressUpdate {
   totalHours?: number;
   placedHours?: number;
   unplacedHours?: number;
+  globalTotalHours?: number;
+  globalPlacedHours?: number;
+  globalUnplacedHours?: number;
   targetTeacherName?: string;
   targetClassName?: string;
 }
@@ -1469,7 +1472,7 @@ self.onmessage = async (e: MessageEvent) => {
   const isAggressiveOrDeep = true;
   // Maximum number of restarts and duration before returning the best-effort schedule
   const maxRestarts = options?.numTrials ?? 80;
-  const maxDurationMs = 30000;
+  const maxDurationMs = options?.maxDurationMs ?? 30000;
 
   // Infinite Solver & Randomized Restart Loop
   while (!stopped) {
@@ -1632,67 +1635,72 @@ self.onmessage = async (e: MessageEvent) => {
     ): Promise<SolveResult> => {
       if (stopped) return { success: false };
 
+
+
       const tryChainShiftRecursive = async (
         assignmentId: string,
         targetD: number,
         targetP: number,
         visited: Set<string>,
         chainDepth: number,
-        maxChainDepth: number
+        maxChainDepth: number,
+        exactSourceD: number = -1,
+        exactSourceP: number = -1,
+        exactBlockSize: number = 0,
+        exactClassId: string = ""
       ): Promise<boolean> => {
+        // CPU ve sonsuz döngü koruması: CPU zamanını dengeleme
+        if (Date.now() - startTime > maxDurationMs) return false;
+        
         if (chainDepth > maxChainDepth) return false;
         if (visited.has(assignmentId)) return false;
 
         const assignObj = assignmentsMap.get(assignmentId);
         if (!assignObj) return false;
 
-        const classId = assignObj.classId;
+        const classId = exactClassId || assignObj.classId;
         const classObj = classesMap.get(classId);
         if (!classObj) return false;
 
-        // 1. Find the current placement of assignmentId in currentSchedule
-        let sourceD = -1;
-        let sourceP = -1;
-        let blockSize = 0;
-        const slotsToMove: ScheduleSlot[] = [];
+        let sourceD = exactSourceD;
+        let sourceP = exactSourceP;
+        let blockSize = exactBlockSize;
 
-        for (let d = 0; d < numDays && sourceD === -1; d++) {
-          for (let p = 0; p < numPeriods; p++) {
-            const slot = currentSchedule[classId]?.[d]?.[p];
-            if (slot && slot.assignmentId === assignmentId) {
-              sourceD = d;
-              sourceP = p;
-              // Scan contiguous block size for this assignment
-              let currP = p;
-              while (currP < numPeriods) {
-                const s = currentSchedule[classId]?.[d]?.[currP];
-                if (s && s.assignmentId === assignmentId) {
-                  slotsToMove.push(s);
-                  currP++;
-                } else {
-                  break;
+        if (sourceD === -1 || blockSize === 0) {
+          const slotsToMove: ScheduleSlot[] = [];
+          for (let d = 0; d < numDays && sourceD === -1; d++) {
+            for (let p = 0; p < numPeriods; p++) {
+              const slot = currentSchedule[classId]?.[d]?.[p];
+              if (slot && slot.assignmentId === assignmentId) {
+                sourceD = d;
+                sourceP = p;
+                let currP = p;
+                while (currP < numPeriods) {
+                  const s = currentSchedule[classId]?.[d]?.[currP];
+                  if (s && s.assignmentId === assignmentId) {
+                    slotsToMove.push(s);
+                    currP++;
+                  } else {
+                    break;
+                  }
                 }
+                blockSize = slotsToMove.length;
+                break;
               }
-              blockSize = slotsToMove.length;
-              break;
             }
           }
         }
+        
+        if (blockSize === 0) blockSize = 1;
 
-        // If already at target, return true!
         if (sourceD === targetD && sourceP === targetP) {
           return true;
         }
 
-        // 2. Check if (targetD, targetP) is physically possible for classId, teacher, classroom
-        for (let offset = 0; offset < (blockSize || 1); offset++) {
+        for (let offset = 0; offset < blockSize; offset++) {
           const currP = targetP + offset;
           if (currP >= numPeriods) return false;
-
-          // Class unavailability
           if (classObj.unavailability[targetD]?.[currP] === true) return false;
-
-          // Teacher unavailability
           if (assignObj.teacherId) {
             const tIds = parseTeacherIds(assignObj.teacherId);
             for (const tId of tIds) {
@@ -1700,80 +1708,70 @@ self.onmessage = async (e: MessageEvent) => {
               if (teacher?.unavailability[targetD]?.[currP] === true) return false;
             }
           }
-
-          // Classroom unavailability
           if (assignObj.classroomId) {
             const classroom = classroomsMap.get(assignObj.classroomId);
             if (classroom?.unavailability[targetD]?.[currP] === true) return false;
           }
         }
 
-        // 3. Collect conflicts at (targetD, targetP) in current state
-        const conflicts = new Set<string>(); // Set of assignment IDs
-        for (let offset = 0; offset < (blockSize || 1); offset++) {
+        const conflicts = new Map<string, {d: number, p: number, size: number, conflictClassId: string}>();
+        
+        const checkAndAddConflict = (occupiedSlot: ScheduleSlot | null, busyClassId: string, currP: number) => {
+           if (occupiedSlot && occupiedSlot.assignmentId !== assignmentId) {
+              if (!conflicts.has(occupiedSlot.assignmentId)) {
+                 let startP = currP;
+                 while(startP > 0 && currentSchedule[busyClassId]?.[targetD]?.[startP - 1]?.assignmentId === occupiedSlot.assignmentId) {
+                   startP--;
+                 }
+                 let endP = currP;
+                 while(endP < numPeriods - 1 && currentSchedule[busyClassId]?.[targetD]?.[endP + 1]?.assignmentId === occupiedSlot.assignmentId) {
+                   endP++;
+                 }
+                 conflicts.set(occupiedSlot.assignmentId, {d: targetD, p: startP, size: endP - startP + 1, conflictClassId: busyClassId});
+              }
+           }
+        };
+
+        for (let offset = 0; offset < blockSize; offset++) {
           const currP = targetP + offset;
-
-          // Class conflict
-          const classOccupant = currentSchedule[classId]?.[targetD]?.[currP];
-          if (classOccupant && classOccupant.assignmentId !== assignmentId) {
-            conflicts.add(classOccupant.assignmentId);
-          }
-
-          // Teacher conflict (check other classes where this teacher is scheduled at (targetD, currP))
+          checkAndAddConflict(currentSchedule[classId]?.[targetD]?.[currP], classId, currP);
           if (assignObj.teacherId) {
             const tIds = parseTeacherIds(assignObj.teacherId);
             for (const tId of tIds) {
               const busyClassId = currentTeacherOccupancy[tId]?.[targetD]?.[currP];
               if (busyClassId && busyClassId !== classId) {
-                const occupiedSlot = currentSchedule[busyClassId]?.[targetD]?.[currP];
-                if (occupiedSlot && occupiedSlot.assignmentId !== assignmentId) {
-                  conflicts.add(occupiedSlot.assignmentId);
-                }
+                checkAndAddConflict(currentSchedule[busyClassId]?.[targetD]?.[currP], busyClassId, currP);
               }
             }
           }
-
-          // Classroom conflict (check other classes using this classroom)
           if (assignObj.classroomId) {
             const busyClassId = currentClassroomOccupancy[assignObj.classroomId]?.[targetD]?.[currP];
             if (busyClassId && busyClassId !== classId) {
-              const occupiedSlot = currentSchedule[busyClassId]?.[targetD]?.[currP];
-              if (occupiedSlot && occupiedSlot.assignmentId !== assignmentId) {
-                conflicts.add(occupiedSlot.assignmentId);
-              }
+              checkAndAddConflict(currentSchedule[busyClassId]?.[targetD]?.[currP], busyClassId, currP);
             }
           }
         }
 
-        // 4. Validate if any of the conflicts cannot be shifted (e.g. locked)
-        for (const confId of conflicts) {
-          if (visited.has(confId)) return false; // Cycle detected
-          
+        for (const [confId, confData] of conflicts.entries()) {
+          if (visited.has(confId)) return false; 
           const confAssignObj = assignmentsMap.get(confId);
           if (!confAssignObj) return false;
-          
           if (options?.priorityAssignmentIds && options.priorityAssignmentIds.includes(confId)) {
             return false;
           }
-          
-          const course = coursesMap.get(confAssignObj.courseId);
-          if (course?.isLocked) return false;
         }
 
-        // Create local clones to try shifting without corrupting state
         const backupSchedule = cloneSchedule(currentSchedule);
         const backupTeacherOccupancy = cloneOccupancy(currentTeacherOccupancy, numDays);
         const backupClassroomOccupancy = cloneOccupancy(currentClassroomOccupancy, numDays);
 
-        // Add ourselves to visited
         const nextVisited = new Set(visited);
         nextVisited.add(assignmentId);
 
-        // Temporarily "clear" the source slot of assignmentId in the backup state so they don't look busy
         if (sourceD !== -1) {
           for (let offset = 0; offset < blockSize; offset++) {
             const sP = sourceP + offset;
-            const slot = backupSchedule[classId][sourceD][sP];
+            const slot = backupSchedule[classId][sourceD]?.[sP];
             if (slot && slot.assignmentId === assignmentId) {
               backupSchedule[classId][sourceD][sP] = null;
               clearOccupancy(classId, sourceD, sP, slot, backupTeacherOccupancy, backupClassroomOccupancy);
@@ -1781,67 +1779,92 @@ self.onmessage = async (e: MessageEvent) => {
           }
         }
 
-        // Try to find homes for all conflicts recursively
         let allResolved = true;
-
-        for (const confId of conflicts) {
+        for (const [confId, confData] of conflicts.entries()) {
           const confAssign = assignmentsMap.get(confId);
           if (!confAssign) {
             allResolved = false;
             break;
           }
-
           let resolvedThisConflict = false;
           
-          // Separate empty vs occupied slots in confAssign's class
-          const emptySlots: { d: number; p: number }[] = [];
-          const occupiedSlots: { d: number; p: number }[] = [];
-
+          // ChainedShiftReassignment (K-Dereceli Akıllı Seçim ve Katmanlı Genişleme)
+          // Her aday boşluk için Relaxation Heuristic (esneklik / daha az kısıt) skoru oluşturulur
+          const candidates: { d: number; p: number; score: number }[] = [];
+          
           for (let nd = 0; nd < numDays; nd++) {
             if (classesMap.get(confAssign.classId)?.unavailability[nd]?.every(p => p === true)) continue;
-            for (let np = 0; np < numPeriods; np++) {
-              if (nd === targetD && np === targetP) continue;
+            for (let np = 0; np <= numPeriods - confData.size; np++) {
+              if (nd === targetD && np >= confData.p && np < confData.p + confData.size) continue;
               
-              const isCurrentlyEmpty = (backupSchedule[confAssign.classId]?.[nd]?.[np] === null);
-              if (isCurrentlyEmpty) {
-                emptySlots.push({ d: nd, p: np });
-              } else {
-                occupiedSlots.push({ d: nd, p: np });
+              let score = 0;
+              for(let o = 0; o < confData.size; o++) {
+                 const currP = np + o;
+                 // Add penalty for class conflict
+                 if (backupSchedule[confAssign.classId]?.[nd]?.[currP] !== null) {
+                    score += 10;
+                 }
+                 // Add penalty for teacher conflict
+                 if (confAssign.teacherId) {
+                    const tIds = parseTeacherIds(confAssign.teacherId);
+                    for (const tId of tIds) {
+                      if (backupTeacherOccupancy[tId]?.[nd]?.[currP]) {
+                         score += 15;
+                      }
+                    }
+                 }
+                 // Add penalty for classroom conflict
+                 if (confAssign.classroomId) {
+                    if (backupClassroomOccupancy[confAssign.classroomId]?.[nd]?.[currP]) {
+                       score += 10;
+                    }
+                 }
               }
+              // Rasgelelik ile eşit skorlarda tekilliği kırmak
+              score += random();
+              candidates.push({ d: nd, p: np, score });
             }
           }
 
-          const possibleSlots = [...emptySlots, ...occupiedSlots];
+          // En az kısıtı olanlardan başlayarak sıralama
+          candidates.sort((a, b) => a.score - b.score);
+          
+          // Katmanlı 5 adımlı branşlaşma (Branch factor: 5)
+          const possibleSlots = candidates.slice(0, 5);
 
           for (const slot of possibleSlots) {
-            // Swap global references temporarily to make recursion point to backup state
             const oldSchedule = currentSchedule;
             const oldTeacher = currentTeacherOccupancy;
             const oldClassroom = currentClassroomOccupancy;
-
+            
             currentSchedule = backupSchedule;
             currentTeacherOccupancy = backupTeacherOccupancy;
             currentClassroomOccupancy = backupClassroomOccupancy;
-
+            
+            // Recursive Chain Swap - Atomik İşlem (Transaction mantığı)
             const success = await tryChainShiftRecursive(
               confId,
               slot.d,
               slot.p,
               nextVisited,
               chainDepth + 1,
-              maxChainDepth
+              maxChainDepth,
+              confData.d,
+              confData.p,
+              confData.size,
+              confData.conflictClassId
             );
-
+            
+            // Transaction Rollback / Restore Context
             currentSchedule = oldSchedule;
             currentTeacherOccupancy = oldTeacher;
             currentClassroomOccupancy = oldClassroom;
-
+            
             if (success) {
               resolvedThisConflict = true;
               break;
             }
           }
-
           if (!resolvedThisConflict) {
             allResolved = false;
             break;
@@ -1849,8 +1872,7 @@ self.onmessage = async (e: MessageEvent) => {
         }
 
         if (allResolved) {
-          // If all conflicts are successfully recursively shifted, we can place assignmentId at (targetD, targetP)
-          for (let offset = 0; offset < (blockSize || 1); offset++) {
+          for (let offset = 0; offset < blockSize; offset++) {
             const tP = targetP + offset;
             const slot = {
               assignmentId: assignObj.id,
@@ -1862,7 +1884,6 @@ self.onmessage = async (e: MessageEvent) => {
             registerOccupancy(classId, targetD, tP, slot, backupTeacherOccupancy, backupClassroomOccupancy);
           }
 
-          // Apply backup state to main state!
           for (const cId of Object.keys(currentSchedule)) {
             for (let d = 0; d < numDays; d++) {
               currentSchedule[cId][d] = [...backupSchedule[cId][d]];
@@ -1878,13 +1899,11 @@ self.onmessage = async (e: MessageEvent) => {
               currentClassroomOccupancy[rId][d] = [...backupClassroomOccupancy[rId][d]];
             }
           }
-
           return true;
         }
 
         return false;
       };
-
       const combinedConflicts = new Set<string>();
 
       currentTrialSteps++;
@@ -2725,13 +2744,18 @@ self.onmessage = async (e: MessageEvent) => {
             const preShiftTeacher = cloneOccupancy(currentTeacherOccupancy, numDays);
             const preShiftClassroom = cloneOccupancy(currentClassroomOccupancy, numDays);
 
+            const adaptiveMaxChainDepth = isTargeted ? 15 : 10 + (restartCount % 5);
             const success = await tryChainShiftRecursive(
               block.assignment.id,
               d_target,
               p_target,
               new Set(),
               1,
-              4
+              adaptiveMaxChainDepth,
+              -1,
+              -1,
+              block.size,
+              classId
             );
 
             if (success) {
@@ -2819,12 +2843,41 @@ self.onmessage = async (e: MessageEvent) => {
 
       if (placedSlotsList.length === 0) return false;
 
-      // 2. Select randomly to clear (higher ratio for targeted to allow enough restructuring)
-      const clearRatio = isTargeted ? 0.35 : 0.10;
+      // Öneri 3: Hedef Odaklı ve Adaptif LNS Bozması (Targeted Adaptive LNS Destruction)
+      // Tıkanıklık sürdükçe bozma oranını artırıyor ve özellikle yerleşemeyen derslerin 
+      // sınıflarına/öğretmenlerine ait mevcut yerleşimleri bozmaya öncelik veriyoruz.
+      const adaptiveRatio = Math.min(0.50, (isTargeted ? 0.35 : 0.10) + (consecutiveLnsRepairsWithoutImprovement * 0.05));
       const minClear = isTargeted ? 3 : 1;
-      const numToClear = Math.max(minClear, Math.floor(placedSlotsList.length * clearRatio));
-      const shuffledSlots = shuffle([...placedSlotsList]);
-      const slotsToClear = shuffledSlots.slice(0, numToClear);
+      const numToClear = Math.max(minClear, Math.floor(placedSlotsList.length * adaptiveRatio));
+
+      // Extract trouble classes and teachers from unplaced
+      const troubleClasses = new Set<string>();
+      const troubleTeachers = new Set<string>();
+      bestGlobalUnplaced.forEach(b => {
+        troubleClasses.add(b.assignment.classId);
+        if (b.assignment.teacherId) {
+          parseTeacherIds(b.assignment.teacherId).forEach(t => troubleTeachers.add(t));
+        }
+      });
+
+      // Weight the placed slots: higher weight if they belong to a trouble class or teacher
+      const weightedSlots = placedSlotsList.map(item => {
+        let weight = random();
+        if (troubleClasses.has(item.classId)) weight += 2.0;
+        const assign = assignmentsMap.get(item.slot.assignmentId);
+        if (assign && assign.teacherId) {
+          const tIds = parseTeacherIds(assign.teacherId);
+          if (tIds.some(t => troubleTeachers.has(t))) {
+            weight += 2.0;
+          }
+        }
+        return { item, weight };
+      });
+
+      // Sort by weight descending so we clear the trouble areas first
+      weightedSlots.sort((a, b) => b.weight - a.weight);
+      
+      const slotsToClear = weightedSlots.slice(0, numToClear).map(w => w.item);
 
       // Create a copy of bestGlobalSchedule to modify
       const repairSchedule = cloneSchedule(bestGlobalSchedule);
@@ -3191,7 +3244,7 @@ self.onmessage = async (e: MessageEvent) => {
     for (const assign of assignments) {
       const initial = scheduledHoursCount[assign.id] || 0;
       const current = scheduledHoursInThisTrial[assign.id] || 0;
-      if (current < initial) {
+      if (current < initial || current > assign.weeklyHours) {
         isIdempotentValid = false;
         break;
       }
@@ -3516,8 +3569,10 @@ self.onmessage = async (e: MessageEvent) => {
 
             const score = calculateScheduleScore(tabuSchedule, state, teachersMap, classesMap, classroomsMap, coursesMap);
 
-            // --- ONE-STEP LOOK-AHEAD FOR TABU SEARCH ---
-            // Benzetilmiş tavlamadaki gibi, boşluk optimizasyonunu daha ileriye götürmek için 1 adım ileri tarıyoruz
+            // Öneri 4: Tabu Aramada Çapraz-Sınıf Çoklu-Adım İleri Görüş (Tabu Cross-Class Look-ahead Swaps)
+            // Daha önce sadece tek sınıf içinde basit look-ahead yapılıyordu. Şimdi farklı sınıflarda 
+            // ekstra takas (3-yönlü/Çoklu değişim) değerlendiriliyor. Bu, öğretmen boşluklarını 
+            // optimize ederken yerel minimumlardan daha güçlü çıkmamızı sağlar.
             let bestLaScore = score;
             let bestLaMove: { d3: number; p3: number; d4: number; p4: number; classId: string } | null = null;
 

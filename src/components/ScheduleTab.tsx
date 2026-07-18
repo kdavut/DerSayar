@@ -3485,7 +3485,12 @@ const handleSetCustomDistribution = (assignmentId: string, distribution: string)
                   {/* Real-time right click context menu */}
                   {contextMenu && contextMenu.visible && (
                     <div
-                      style={{ top: contextMenu.y, left: contextMenu.x }}
+                      style={{ 
+                        top: contextMenu.y + 350 > window.innerHeight ? 'auto' : contextMenu.y,
+                        bottom: contextMenu.y + 350 > window.innerHeight ? window.innerHeight - contextMenu.y : 'auto',
+                        left: contextMenu.x + 260 > window.innerWidth ? 'auto' : contextMenu.x,
+                        right: contextMenu.x + 260 > window.innerWidth ? window.innerWidth - contextMenu.x : 'auto'
+                      }}
                       className="fixed z-[999] min-w-[240px] bg-white border border-slate-200 rounded-xl shadow-2xl p-1.5 flex flex-col gap-0.5 divide-y divide-slate-100 font-sans"
                       onClick={(e) => e.stopPropagation()} // Prevent auto close when clicking options
                     >
@@ -3657,7 +3662,12 @@ const handleSetCustomDistribution = (assignmentId: string, distribution: string)
                   {/* Teacher right click context menu */}
                   {teacherContextMenu && teacherContextMenu.visible && (
                     <div
-                      style={{ top: teacherContextMenu.y, left: teacherContextMenu.x }}
+                      style={{ 
+                        top: teacherContextMenu.y + 250 > window.innerHeight ? 'auto' : teacherContextMenu.y,
+                        bottom: teacherContextMenu.y + 250 > window.innerHeight ? window.innerHeight - teacherContextMenu.y : 'auto',
+                        left: teacherContextMenu.x + 280 > window.innerWidth ? 'auto' : teacherContextMenu.x,
+                        right: teacherContextMenu.x + 280 > window.innerWidth ? window.innerWidth - teacherContextMenu.x : 'auto'
+                      }}
                       className="fixed z-[999] min-w-[260px] bg-white border border-slate-200 rounded-xl shadow-2xl p-1.5 flex flex-col gap-0.5 divide-y divide-slate-100 font-sans"
                       onClick={(e) => e.stopPropagation()} // Prevent auto close when clicking options
                     >
@@ -3766,26 +3776,49 @@ const handleSetCustomDistribution = (assignmentId: string, distribution: string)
                   )}
 
                   {/* Minimalist Live Counters Grid */}
-                  <div className="grid grid-cols-3 gap-2 bg-slate-50 border border-slate-100 rounded-xl p-3">
-                    <div className="text-center space-y-0.5">
-                      <span className="block text-[10px] font-bold text-slate-400 uppercase tracking-wider">Atanan Ders</span>
-                      <span className="block text-base font-extrabold text-slate-700">
-                        {schedulingProgress.totalHours ?? state.assignments.reduce((sum, a) => sum + a.weeklyHours, 0)}
-                      </span>
+                  {schedulingProgress.globalTotalHours !== undefined ? (
+                    <div className="grid grid-cols-3 gap-2 bg-slate-50 border border-slate-100 rounded-xl p-3">
+                      <div className="text-center space-y-0.5">
+                        <span className="block text-[10px] font-bold text-slate-400 uppercase tracking-wider">Toplam Ders</span>
+                        <span className="block text-base font-extrabold text-slate-700">
+                          {schedulingProgress.globalTotalHours}
+                        </span>
+                      </div>
+                      <div className="text-center space-y-0.5 border-x border-slate-200/60">
+                        <span className="block text-[10px] font-bold text-slate-400 uppercase tracking-wider">Yerleşen (Toplam)</span>
+                        <span className="block text-base font-extrabold text-emerald-600">
+                          {schedulingProgress.globalPlacedHours}
+                        </span>
+                      </div>
+                      <div className="text-center space-y-0.5">
+                        <span className="block text-[10px] font-bold text-slate-400 uppercase tracking-wider">Kalan (Toplam)</span>
+                        <span className="block text-base font-extrabold text-rose-500">
+                          {schedulingProgress.globalUnplacedHours}
+                        </span>
+                      </div>
                     </div>
-                    <div className="text-center space-y-0.5 border-x border-slate-200/60">
-                      <span className="block text-[10px] font-bold text-slate-400 uppercase tracking-wider">Yerleşen</span>
-                      <span className="block text-base font-extrabold text-emerald-600">
-                        {schedulingProgress.placedHours ?? 0}
-                      </span>
+                  ) : (
+                    <div className="grid grid-cols-3 gap-2 bg-slate-50 border border-slate-100 rounded-xl p-3">
+                      <div className="text-center space-y-0.5">
+                        <span className="block text-[10px] font-bold text-slate-400 uppercase tracking-wider">Atanan Ders</span>
+                        <span className="block text-base font-extrabold text-slate-700">
+                          {schedulingProgress.totalHours ?? state.assignments.reduce((sum, a) => sum + a.weeklyHours, 0)}
+                        </span>
+                      </div>
+                      <div className="text-center space-y-0.5 border-x border-slate-200/60">
+                        <span className="block text-[10px] font-bold text-slate-400 uppercase tracking-wider">Yerleşen</span>
+                        <span className="block text-base font-extrabold text-emerald-600">
+                          {schedulingProgress.placedHours ?? 0}
+                        </span>
+                      </div>
+                      <div className="text-center space-y-0.5">
+                        <span className="block text-[10px] font-bold text-slate-400 uppercase tracking-wider">Kalan Ders</span>
+                        <span className="block text-base font-extrabold text-rose-500">
+                          {schedulingProgress.unplacedHours ?? 0}
+                        </span>
+                      </div>
                     </div>
-                    <div className="text-center space-y-0.5">
-                      <span className="block text-[10px] font-bold text-slate-400 uppercase tracking-wider">Kalan Ders</span>
-                      <span className="block text-base font-extrabold text-rose-500">
-                        {schedulingProgress.unplacedHours ?? 0}
-                      </span>
-                    </div>
-                  </div>
+                  )}
 
                   <div className="pt-1">
                     <button
@@ -4354,7 +4387,12 @@ const handleSetCustomDistribution = (assignmentId: string, distribution: string)
 
             return (
               <div
-                style={{ top: assignmentContextMenu.y, left: assignmentContextMenu.x }}
+                style={{ 
+                  top: assignmentContextMenu.y + 300 > window.innerHeight ? 'auto' : assignmentContextMenu.y,
+                  bottom: assignmentContextMenu.y + 300 > window.innerHeight ? window.innerHeight - assignmentContextMenu.y : 'auto',
+                  left: assignmentContextMenu.x + 280 > window.innerWidth ? 'auto' : assignmentContextMenu.x,
+                  right: assignmentContextMenu.x + 280 > window.innerWidth ? window.innerWidth - assignmentContextMenu.x : 'auto'
+                }}
                 className="fixed z-[999] min-w-[260px] bg-white border border-slate-200 rounded-xl shadow-2xl p-1.5 flex flex-col gap-0.5 divide-y divide-slate-100 font-sans"
                 onClick={(e) => e.stopPropagation()}
               >

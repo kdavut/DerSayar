@@ -176,7 +176,7 @@ interface AppStoreActions {
   setSelectedAssignmentToAssignRoom: (id: string) => void;
   setSearchQuery: (query: string) => void;
   verileri_hazırla: () => Promise<AppState>;
-  dersleri_yerleştir: (preparedState: AppState, keepExisting: boolean, targets?: { classIds?: string[], teacherIds?: string[] }) => Promise<any>;
+  dersleri_yerleştir: (preparedState: AppState, keepExisting: boolean, targets?: { classIds?: string[], teacherIds?: string[] }, extraOpts?: { deepSearch?: boolean, numTrials?: number, maxDurationMs?: number, extraProgressFields?: any }) => Promise<any>;
   stopAutomaticScheduler: () => void;
   runAutomaticScheduler: (keepExisting: boolean, targets?: { classIds?: string[], teacherIds?: string[] }, bypassFeasibilityCheck?: boolean) => Promise<void>;
   handleAutoGenerateClick: () => void;
@@ -780,7 +780,7 @@ export const useAppStore = create<AppStore>((set) => ({
     return useAppStore.getState().historyState.current;
   },
 
-  dersleri_yerleştir: async (preparedState, keepExisting, targets) => {
+  dersleri_yerleştir: async (preparedState, keepExisting, targets, extraOpts) => {
     const store = useAppStore.getState();
 
     // Determine target teacher or class names for the progress dialog
@@ -822,14 +822,22 @@ export const useAppStore = create<AppStore>((set) => ({
       store.setSchedulingProgress({
         ...progress,
         targetTeacherName: targetTeacherName || progress.targetTeacherName,
-        targetClassName: targetClassName || progress.targetClassName
+        targetClassName: targetClassName || progress.targetClassName,
+        ...extraOpts?.extraProgressFields,
+        globalPlacedHours: extraOpts?.extraProgressFields?.globalTotalHours !== undefined 
+            ? (extraOpts.extraProgressFields.globalPlacedHours + (progress.placedHours || 0)) 
+            : extraOpts?.extraProgressFields?.globalPlacedHours,
+        globalUnplacedHours: extraOpts?.extraProgressFields?.globalTotalHours !== undefined 
+            ? (extraOpts.extraProgressFields.globalTotalHours - (extraOpts.extraProgressFields.globalPlacedHours + (progress.placedHours || 0))) 
+            : extraOpts?.extraProgressFields?.globalUnplacedHours
       });
     }, {
       keepExisting,
       targetClassIds: targets?.classIds,
       targetTeacherIds: targets?.teacherIds,
-      deepSearch: store.deepSearch,
-      numTrials: store.numTrials
+      deepSearch: extraOpts?.deepSearch !== undefined ? extraOpts.deepSearch : store.deepSearch,
+      numTrials: extraOpts?.numTrials !== undefined ? extraOpts.numTrials : store.numTrials,
+      maxDurationMs: extraOpts?.maxDurationMs
     });
     return result;
   },
@@ -1041,7 +1049,7 @@ export const useAppStore = create<AppStore>((set) => ({
     }
   },
 
-  handleAutoGenerateClick: () => {
+  handleAutoGenerateClick: async () => {
     const store = useAppStore.getState();
     if (!store.user) {
       store.showToast("Değişiklik yapabilmek için lütfen geçerli bir lisansa sahip yönetici hesabı ile giriş yapın (SaaS Lisans Koruması).", "error");
@@ -1053,28 +1061,157 @@ export const useAppStore = create<AppStore>((set) => ({
       store.showToast("Öncelikle 'Ders Dağıtımı' menüsünden sınıflara ders atamalısınız!", "error");
       return;
     }
-    
-    let hasPlacedLessons = false;
-    for (const cId of Object.keys(state.schedule)) {
-      const classSched = state.schedule[cId];
-      if (classSched) {
-        for (const day of Object.keys(classSched)) {
-          if (classSched[parseInt(day)]?.some(slot => slot !== null)) {
-            hasPlacedLessons = true;
-            break;
+
+    store.setIsSchedulingOptionsOpen(false);
+    store.setIsScheduling(true);
+
+    try {
+      // 1. Prepare data
+      const preparedState = await store.verileri_hazırla();
+
+      // 2. Calculate class total hours
+      const classTotalHours = new Map();
+      let globalTotalHours = 0;
+      preparedState.assignments.forEach(a => {
+        classTotalHours.set(a.classId, (classTotalHours.get(a.classId) || 0) + a.weeklyHours);
+        globalTotalHours += a.weeklyHours;
+      });
+
+      // Calculate initial placed from schedule
+      let initialGlobalPlacedSoFar = 0;
+      for (const cId of Object.keys(preparedState.schedule || {})) {
+        const classSched = preparedState.schedule[cId];
+        if (classSched) {
+          for (const d of Object.keys(classSched)) {
+            classSched[parseInt(d)]?.forEach(slot => {
+              if (slot !== null) initialGlobalPlacedSoFar++;
+            });
           }
         }
       }
-      if (hasPlacedLessons) break;
-    }
 
-    if (hasPlacedLessons) {
-      store.setIsSchedulingOptionsOpen(true);
-    } else {
-      store.runAutomaticScheduler(false);
+      // 3. Sort teachers
+      const teacherStats = new Map();
+      preparedState.teachers.forEach(t => {
+        teacherStats.set(t.id, { isCoTeaching: false, minClassHours: 9999, totalHours: 0 });
+      });
+
+      preparedState.assignments.forEach(a => {
+        if (a.teacherId) {
+          const tIds = a.teacherId.split(",");
+          const isCo = tIds.length > 1;
+          const cHours = classTotalHours.get(a.classId) || 0;
+          tIds.forEach(tId => {
+            const stats = teacherStats.get(tId);
+            if (stats) {
+              stats.totalHours += a.weeklyHours;
+              if (isCo) stats.isCoTeaching = true;
+              if (cHours < stats.minClassHours) stats.minClassHours = cHours;
+            }
+          });
+        }
+      });
+
+      const sortedTeachers = [...preparedState.teachers].sort((a, b) => {
+        const statsA = teacherStats.get(a.id);
+        const statsB = teacherStats.get(b.id);
+        
+        // 1. Co-teaching
+        if (statsA.isCoTeaching && !statsB.isCoTeaching) return -1;
+        if (!statsA.isCoTeaching && statsB.isCoTeaching) return 1;
+        
+        // 2. Min Class Hours (ASC)
+        if (statsA.minClassHours !== statsB.minClassHours) {
+          return statsA.minClassHours - statsB.minClassHours;
+        }
+        
+        // 3. Teacher Total Hours (DESC)
+        return statsB.totalHours - statsA.totalHours;
+      });
+
+      if (sortedTeachers.length === 0) {
+        store.showToast("Öncelikle sisteme öğretmen tanımlamalısınız!", "error");
+        store.setIsScheduling(false);
+        return;
+      }
+
+      // 4. Loop through teachers sequentially
+      let totalUnplaced = [];
+      let currentState = preparedState;
+      let currentGlobalPlaced = initialGlobalPlacedSoFar;
+
+      for (let i = 0; i < sortedTeachers.length; i++) {
+        // Break early if cancelled
+        if (!useAppStore.getState().isScheduling) {
+           break;
+        }
+
+        const teacher = sortedTeachers[i];
+        const stats = teacherStats.get(teacher.id);
+        if (stats.totalHours === 0) continue; // Skip teachers with no assignments
+
+        // Only place this teacher's assignments
+        const result = await store.dersleri_yerleştir(
+          currentState, 
+          true, // keepExisting: true
+          { teacherIds: [teacher.id] }, 
+          { deepSearch: true, numTrials: 9999, maxDurationMs: 180000, 
+            extraProgressFields: {
+              targetTeacherName: `${teacher.name} (${i + 1} / ${sortedTeachers.length})`,
+              targetClassName: "",
+              globalTotalHours,
+              globalPlacedHours: currentGlobalPlaced
+            }
+          } // En derin çözüm, 3 dakika max
+        );
+
+        if (result.schedule) {
+          // Update the state for the next teacher
+          currentState = { ...currentState, schedule: result.schedule };
+          store.updateState((draft) => {
+            draft.schedule = result.schedule;
+          });
+
+          // Recalculate global placed
+          currentGlobalPlaced = 0;
+          for (const cId of Object.keys(result.schedule || {})) {
+            const classSched = result.schedule[cId];
+            if (classSched) {
+              for (const d of Object.keys(classSched)) {
+                classSched[parseInt(d)]?.forEach(slot => {
+                  if (slot !== null) currentGlobalPlaced++;
+                });
+              }
+            }
+          }
+        }
+
+        if (result.unplacedReports && result.unplacedReports.length > 0) {
+          // Add unplaced reports for this teacher, avoiding duplicates if possible
+          totalUnplaced.push(...result.unplacedReports);
+        }
+      }
+
+      if (useAppStore.getState().isScheduling) {
+        const hasUnplaced = totalUnplaced.length > 0;
+        if (!hasUnplaced) {
+          store.showToast("Tüm öğretmenler başarıyla yerleştirildi!", "success");
+        } else {
+          store.setUnplacedReports(totalUnplaced);
+          store.setIsAnalysisOpen(true);
+          store.showToast("Bazı dersler yerleştirilemedi. Lütfen analizi inceleyin.", "info");
+        }
+      }
+    } catch (err) {
+      console.error(err);
+      store.showToast("Ders programı yerleştirilirken beklenmedik bir hata oluştu!", "error");
+    } finally {
+      if (useAppStore.getState().isScheduling) {
+        store.setIsScheduling(false);
+        store.setSchedulingProgress(null);
+      }
     }
   },
-
   handleScheduleSelectedTeacher: () => {
     const store = useAppStore.getState();
     if (!store.user) {

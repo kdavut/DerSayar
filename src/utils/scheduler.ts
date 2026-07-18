@@ -28,6 +28,9 @@ export interface ProgressUpdate {
   totalHours?: number;
   placedHours?: number;
   unplacedHours?: number;
+  globalTotalHours?: number;
+  globalPlacedHours?: number;
+  globalUnplacedHours?: number;
   targetTeacherName?: string;
   targetClassName?: string;
 }
@@ -863,6 +866,7 @@ export function restoreMissingTeacherHours(
   newSched: ClassScheduleMap,
   state: AppState
 ): ClassScheduleMap {
+  return newSched; // Disabled because it causes duplication bugs
   let finalSchedule = JSON.parse(JSON.stringify(newSched));
   const { teachers, assignments, settings } = state;
   const numDays = settings.days.length;
@@ -1071,6 +1075,7 @@ export async function generateStepByStepScheduleAsync(
     priorityAssignmentIds?: string[];
     numTrials?: number;
     deepSearch?: boolean;
+    maxDurationMs?: number;
     maxDepth?: number;
     stepByStep?: boolean;
     randomSeed?: number;
@@ -1115,11 +1120,6 @@ export async function generateStepByStepScheduleAsync(
           worker.terminate();
 
           if (result && result.schedule) {
-            // Apply restoration to ensure no teacher's placed hours are decreased compared to before starting
-            if (initialSchedule && initialAppState) {
-              result.schedule = restoreMissingTeacherHours(initialSchedule, result.schedule, initialAppState);
-            }
-
             // Compute diagnostics and reports on the main thread for the unplaced items
             const { settings, teachers, classes, assignments } = state;
             const numDays = settings.days.length;
